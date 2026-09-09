@@ -9,6 +9,7 @@ from skill_inject_mcp.index.vector import build_vector_index
 from skill_inject_mcp.registry.scan import SkillRegistry
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
+from skill_inject_mcp.retrieve.multi_query import expand_queries
 from skill_inject_mcp.schemas import (
     CheckResult,
     EvidenceItem,
@@ -128,13 +129,14 @@ class SkillInjectEngine:
         constraints = request.constraints
         skills_dir = None
         rerank = self.settings.rerank
-        top_k = 5
+        top_k = self.settings.resolve_top_k
         min_score = None
         if constraints:
             if constraints.skills_dir:
                 skills_dir = Path(constraints.skills_dir)
             rerank = constraints.rerank
-            top_k = constraints.top_k
+            if constraints.top_k is not None:
+                top_k = constraints.top_k
             min_score = constraints.min_score
 
         if rerank == "qwen3-0.6b":
@@ -221,7 +223,24 @@ class SkillInjectEngine:
 
         for req in request.requirements:
             query = expand_query(req.description, req.search_query)
-            hits = self.retriever.retrieve(query, top_k=max(top_k, 1))
+            mq = expand_queries(
+                req.description,
+                req.search_query,
+                api_key=self.settings.resolve_api_key(),
+                enabled=self.settings.multi_query_enabled(),
+                model=self.settings.multi_query_model,
+                base_url=self.settings.embedding_base_url,
+                timeout_s=self.settings.multi_query_timeout_s,
+            )
+            if mq.skipped and self.settings.multi_query_enabled():
+                # Key present and multi-query on, but expander failed/timeout/empty
+                degraded = True
+                notes.append(
+                    f"multi_query_skipped for '{req.id}': {mq.reason or 'unknown'}"
+                )
+            hits = self.retriever.retrieve(
+                query, top_k=max(int(top_k), 1), queries=mq.queries
+            )
 
             # Optionally filter by min_score (RRF)
             if min_score is not None:

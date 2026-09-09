@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
@@ -29,13 +29,23 @@ class Settings(BaseSettings):
     use_fake_embedder: bool = False
     rrf_k: int = 60
     retrieve_top_k: int = 20
+    # Agent-facing default when constraints.top_k is omitted (evidence / walk width).
+    resolve_top_k: int = 5
     rerank: Literal["off", "qwen3-0.6b"] = "off"
+    # Multi-query expansion (OpenRouter chat). Effective only when API key present.
+    multi_query: bool = True
+    multi_query_model: str = "openai/gpt-oss-120b"
+    multi_query_timeout_s: float = 12.0
 
     def resolve_api_key(self) -> str | None:
         # Also accept bare OPENROUTER_API_KEY via env without prefix
         import os
 
         return self.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
+
+    def multi_query_enabled(self) -> bool:
+        """True when multi-query is configured on and an API key is available."""
+        return bool(self.multi_query) and bool(self.resolve_api_key())
 
 
 def get_settings(**overrides) -> Settings:

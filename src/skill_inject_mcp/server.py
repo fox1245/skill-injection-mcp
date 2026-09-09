@@ -24,7 +24,10 @@ _engine = SkillInjectEngine()
 def resolve_skills(request: dict[str, Any] | SkillInjectRequest) -> dict[str, Any]:
     """Resolve task requirements to indexed Agent Skills via hybrid retrieval.
 
-    Pass a SkillInjectRequest object (schema_version 1.0) with requirements[].
+    Pass a SkillInjectRequest (schema_version 1.0) with requirements[].
+    Optional constraints.top_k (int >= 1) controls how many hybrid candidates
+    are walked and returned as evidence per requirement; default is 5 when omitted
+    (internal sparse/dense channel still uses retrieve_top_k, typically 20).
     Returns SkillInjectResponse. Never complete if required requirements are unmatched.
     """
     if isinstance(request, SkillInjectRequest):

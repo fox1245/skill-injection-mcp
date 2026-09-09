@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Sequence
@@ -73,6 +73,31 @@ def reciprocal_rank_fusion(
     return fused
 
 
+def _merge_best_scores(
+    dense_by_query: list[list[tuple[str, float]]],
+    sparse_by_query: list[list[tuple[str, float, int]]],
+) -> tuple[list[tuple[str, float]], list[tuple[str, float, int]]]:
+    """Take max score per skill_id across queries, then re-rank once for RRF."""
+    best_dense: dict[str, float] = {}
+    for hits in dense_by_query:
+        for sid, score in hits:
+            prev = best_dense.get(sid)
+            if prev is None or score > prev:
+                best_dense[sid] = score
+
+    best_sparse: dict[str, float] = {}
+    for hits in sparse_by_query:
+        for sid, score, _rank in hits:
+            prev = best_sparse.get(sid)
+            if prev is None or score > prev:
+                best_sparse[sid] = score
+
+    dense_list = sorted(best_dense.items(), key=lambda x: (-x[1], x[0]))
+    sparse_sorted = sorted(best_sparse.items(), key=lambda x: (-x[1], x[0]))
+    sparse_list = [(sid, score, i) for i, (sid, score) in enumerate(sparse_sorted, start=1)]
+    return dense_list, sparse_list
+
+
 class HybridRetriever:
     def __init__(
         self,
@@ -91,10 +116,36 @@ class HybridRetriever:
         self.rrf_k = rrf_k
         self.retrieve_top_k = retrieve_top_k
 
-    def retrieve(self, query: str, top_k: int | None = None) -> list[RRFResult]:
-        top_k = top_k or self.retrieve_top_k
-        sparse_hits = self.sparse.search(query, top_k=self.retrieve_top_k)
-        qvec = self.embedder.embed_queries([query])[0]
-        dense_hits = self.dense.search(qvec, top_k=self.retrieve_top_k)
-        fused = reciprocal_rank_fusion(dense_hits, sparse_hits, k=self.rrf_k)
-        return fused[:top_k]
+    def retrieve(
+        self,
+        query: str,
+        top_k: int | None = None,
+        queries: Sequence[str] | None = None,
+    ) -> list[RRFResult]:
+        """Hybrid retrieve with optional multi-query expansion.
+
+        When ``queries`` is provided, sparse+dense run per query; best scores
+        per skill_id are merged, then a single RRF pass ranks candidates.
+        ``top_k`` truncates the fused list (agent-facing candidate width).
+        Internal channel size remains ``retrieve_top_k`` per query/side.
+        """
+        top_k = top_k if top_k is not None else self.retrieve_top_k
+        qlist = [q.strip() for q in (queries or [query]) if (q or "").strip()]
+        if not qlist:
+            qlist = [query]
+
+        dense_by_query: list[list[tuple[str, float]]] = []
+        sparse_by_query: list[list[tuple[str, float, int]]] = []
+        for q in qlist:
+            sparse_hits = self.sparse.search(q, top_k=self.retrieve_top_k)
+            sparse_by_query.append(sparse_hits)
+            qvec = self.embedder.embed_queries([q])[0]
+            dense_hits = self.dense.search(qvec, top_k=self.retrieve_top_k)
+            dense_by_query.append(dense_hits)
+
+        if len(qlist) == 1:
+            fused = reciprocal_rank_fusion(dense_by_query[0], sparse_by_query[0], k=self.rrf_k)
+        else:
+            dense_merged, sparse_merged = _merge_best_scores(dense_by_query, sparse_by_query)
+            fused = reciprocal_rank_fusion(dense_merged, sparse_merged, k=self.rrf_k)
+        return fused[: max(top_k, 1)]

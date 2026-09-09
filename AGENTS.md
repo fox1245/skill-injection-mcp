@@ -19,6 +19,8 @@ Input: `SkillInjectRequest` (schema_version `"1.0"`).
 - Provide `requirements[]` with `id`, `description`, optional `required` (default true), optional `depends_on`, optional `search_query`.
 - Server expands queries from descriptions when `search_query` is omitted.
 - Optional `draft_plan`, `constraints` (`skills_dir`, `rerank`, `top_k`).
+- Pass `constraints.top_k` (int >= 1) to control how many hybrid candidates are walked / returned as evidence; **default 5** when omitted. Internal retrieve channel stays `retrieve_top_k` (20).
+- With `OPENROUTER_API_KEY`, resolve may expand each requirement into 3–5 queries (multi-query) before a single RRF; fulfillment still requires the lexical+score match gate.
 
 Output: `SkillInjectResponse` with `match_status` (`complete` | `partial` | `no_match`), `checks`, `evidence`, `gaps`, `validation_errors`, `retriever_degraded`, `plan_bindings`.
 

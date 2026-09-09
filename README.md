@@ -27,6 +27,9 @@ cp .env.example .env
 - **Dense retrieval**: prefers `sqliteai/sqlite-vector` when the optional native extension is loadable; otherwise uses a numpy cosine `VectorIndex` fallback (the default on most setups).
 - **Sparse retrieval**: SQLite FTS5 BM25 (stdlib `sqlite3`).
 - **Fusion**: Reciprocal Rank Fusion (k=60), top-20 each side, fuse by `skill_id`. Tie-break: RRF desc, dense_rank asc, skill_id asc.
+- **Multi-query**: optional OpenRouter chat expansion (`openai/gpt-oss-120b`) into 3–5 diverse queries; merged into one RRF. Prefers providers `Cerebras` then `Groq` with `allow_fallbacks: true`. Skips to the original query without an API key or on timeout/error (`multi_query_skipped` note + `retriever_degraded` when a keyed call fails).
+- **Match gate**: lexical evidence on the skill card is required; scores alone (tiny-registry nearest-neighbor cosine) never fulfill. Sparse ≥0.15 or dense≥0.45 with margin (solo dense ≥0.55).
+- **Agent top_k**: optional `constraints.top_k` (default 5) controls how many hybrid candidates are walked / kept as evidence; internal retrieve channel remains `retrieve_top_k` (20).
 - **Embeddings**: OpenRouter `qwen/qwen3-embedding-8b` MRL 1024 + L2 normalize; `FakeEmbedder` for offline tests (no API key).
 - **Tools**: `resolve_skills`, `reindex_skills`, `get_skill_body`.
 - **Never complete** if any required requirement is unmatched.
@@ -96,4 +99,5 @@ Both of these work on Windows and Linux after `pip install -e .`:
 
 - **sqlite-vector is optional**. When the native extension is not loadable (common on stock Windows Python builds and some Linux distro builds where extension loading is disabled), the MVP automatically falls back to numpy cosine over an `.npz` store behind the same `VectorIndex` interface.
 - Stdlib SQLite FTS5 is used for sparse retrieval on both OS; no extra packages required.
-- Match acceptance requires meaningful BM25 (`sparse_score >= 0.1`) or strong dense cosine (`>= 0.35`) so weak OR-token FTS noise cannot false-complete.
+- Match acceptance requires **lexical evidence** plus sparse (≥0.15) or dense-with-margin (≥0.45 / solo ≥0.55). Similarity in a tiny registry is not fulfillment.
+- Pass `constraints.top_k` on `resolve_skills` to widen/narrow candidate evidence (default 5 when omitted).

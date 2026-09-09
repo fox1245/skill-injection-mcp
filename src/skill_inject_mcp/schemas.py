@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Literal
@@ -26,7 +26,14 @@ class Requirement(BaseModel):
 class Constraints(BaseModel):
     skills_dir: str | None = None
     rerank: Literal["off", "qwen3-0.6b"] = "off"
-    top_k: int = 5
+    top_k: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "How many hybrid candidates to walk / keep as evidence per requirement. "
+            "Optional; default 5. Internal sparse/dense channel remains Settings.retrieve_top_k (20)."
+        ),
+    )
     min_score: float | None = None
 
 
@@ -108,3 +115,4 @@ class SkillMeta(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
+

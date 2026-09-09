@@ -24,13 +24,14 @@ class Settings(BaseSettings):
     )
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     embedding_model: str = "qwen/qwen3-embedding-8b"
-    embedding_dim: int = 1024
+    embedding_dim: int = Field(default=1024, ge=1)
+    embedding_batch_size: int = Field(default=32, ge=1)
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
-    rrf_k: int = 60
-    retrieve_top_k: int = 20
-    # Agent-facing default when constraints.top_k is omitted (evidence / walk width).
-    resolve_top_k: int = 5
+    rrf_k: int = Field(default=60, ge=1)
+    retrieve_top_k: int = Field(default=20, ge=1)
+    # Returned evidence width; acceptance uses the complete retrieved candidate pool.
+    resolve_top_k: int = Field(default=5, ge=1)
     rerank: Literal["off", "qwen3-0.6b"] = "off"
     # Multi-query expansion (OpenRouter chat). Effective only when API key present.
     multi_query: bool = True

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import re
 import sqlite3
 from pathlib import Path
+
+from skill_inject_mcp.text import words
 
 
 def _fts_query(raw: str) -> str:
     """Build a safe FTS5 query from free text (OR of tokens)."""
-    toks = re.findall(r"[A-Za-z0-9_\-]+", raw)
+    toks = words(raw)
     cleaned: list[str] = []
     for t in toks:
-        if len(t) < 2:
-            continue
         # quote tokens to avoid FTS syntax issues
         cleaned.append(f'"{t}"')
     if not cleaned:
@@ -76,7 +75,7 @@ class SparseIndex:
                 SELECT skill_id, bm25(skills_fts) AS score
                 FROM skills_fts
                 WHERE skills_fts MATCH ?
-                ORDER BY score
+                ORDER BY score, skill_id
                 LIMIT ?
                 """,
                 (q, top_k),
@@ -89,6 +88,18 @@ class SparseIndex:
             # negate bm25 so higher is better
             out.append((row["skill_id"], float(-row["score"]), i))
         return out
+
+    def upsert_many(self, skills) -> None:
+        with self._conn:
+            for skill in skills:
+                self._conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill.skill_id,))
+                self._conn.execute(
+                    "INSERT INTO skills_fts(skill_id, name, description, body, tags) VALUES (?,?,?,?,?)",
+                    (skill.skill_id, skill.name, skill.description, skill.body, " ".join(skill.tags)),
+                )
+
+    def close(self) -> None:
+        self._conn.close()
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) AS c FROM skills_fts").fetchone()

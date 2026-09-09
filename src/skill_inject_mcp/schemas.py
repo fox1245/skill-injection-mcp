@@ -1,12 +1,15 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, ConfigDict, Field
 
 SCHEMA_VERSION = "1.0"
+
+
+class ContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
 
 
 class MatchStatus(str, Enum):
@@ -15,46 +18,42 @@ class MatchStatus(str, Enum):
     no_match = "no_match"
 
 
-class Requirement(BaseModel):
-    id: str
-    description: str
+class Requirement(ContractModel):
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     required: bool = True
     search_query: str | None = None
     depends_on: list[str] = Field(default_factory=list)
 
 
-class Constraints(BaseModel):
+class Constraints(ContractModel):
     skills_dir: str | None = None
-    rerank: Literal["off", "qwen3-0.6b"] = "off"
-    top_k: int = Field(
-        default=5,
-        ge=1,
-        description=(
-            "How many hybrid candidates to walk / keep as evidence per requirement. "
-            "Optional; default 5. Internal sparse/dense channel remains Settings.retrieve_top_k (20)."
-        ),
+    rerank: Literal["off", "qwen3-0.6b"] | None = None
+    top_k: int | None = Field(
+        default=None, ge=1,
+        description="Evidence items per requirement; defaults to server setting (5). Does not change acceptance.",
     )
-    min_score: float | None = None
+    min_score: float | None = Field(default=None, ge=0)
 
 
-class DraftPlanStep(BaseModel):
-    id: str
-    summary: str
+class DraftPlanStep(ContractModel):
+    id: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
     requirement_ids: list[str] = Field(default_factory=list)
 
 
-class DraftPlan(BaseModel):
+class DraftPlan(ContractModel):
     steps: list[DraftPlanStep] = Field(default_factory=list)
 
 
-class SkillInjectRequest(BaseModel):
-    schema_version: str = SCHEMA_VERSION
+class SkillInjectRequest(ContractModel):
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
     requirements: list[Requirement] = Field(default_factory=list)
     draft_plan: DraftPlan | None = None
     constraints: Constraints | None = None
 
 
-class CheckResult(BaseModel):
+class CheckResult(ContractModel):
     requirement_id: str
     matched: bool
     skill_id: str | None = None
@@ -62,9 +61,12 @@ class CheckResult(BaseModel):
     dense_rank: int | None = None
     sparse_rank: int | None = None
     reason: str | None = None
+    assessment: Literal["supported", "unknown", "blocked"] = "unknown"
+    missing_terms: list[str] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
 
 
-class EvidenceItem(BaseModel):
+class EvidenceItem(ContractModel):
     skill_id: str
     requirement_id: str
     ranking_score: float
@@ -75,26 +77,26 @@ class EvidenceItem(BaseModel):
     description: str | None = None
 
 
-class GapItem(BaseModel):
+class GapItem(ContractModel):
     requirement_id: str
     description: str
     reason: str
 
 
-class ValidationErrorItem(BaseModel):
+class ValidationErrorItem(ContractModel):
     code: str
     message: str
     path: str | None = None
 
 
-class PlanBinding(BaseModel):
+class PlanBinding(ContractModel):
     step_id: str
     requirement_ids: list[str] = Field(default_factory=list)
     skill_ids: list[str] = Field(default_factory=list)
 
 
-class SkillInjectResponse(BaseModel):
-    schema_version: str = SCHEMA_VERSION
+class SkillInjectResponse(ContractModel):
+    schema_version: Literal["1.0"] = SCHEMA_VERSION
     match_status: MatchStatus
     checks: list[CheckResult] = Field(default_factory=list)
     evidence: list[EvidenceItem] = Field(default_factory=list)
@@ -104,9 +106,10 @@ class SkillInjectResponse(BaseModel):
     plan_bindings: list[PlanBinding] = Field(default_factory=list)
     skills_considered: int = 0
     notes: list[str] = Field(default_factory=list)
+    registry_snapshot: str | None = None
 
 
-class SkillMeta(BaseModel):
+class SkillMeta(ContractModel):
     skill_id: str
     name: str
     description: str
@@ -115,4 +118,4 @@ class SkillMeta(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
-
+    content_hash: str = ""

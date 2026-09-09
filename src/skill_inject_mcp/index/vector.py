@@ -18,6 +18,13 @@ class VectorIndex(ABC):
     def upsert(self, skill_id: str, vector: np.ndarray) -> None:
         ...
 
+    def upsert_many(self, items: Sequence[tuple[str, np.ndarray]]) -> None:
+        for skill_id, vector in items:
+            self.upsert(skill_id, vector)
+
+    def close(self) -> None:
+        pass
+
     @abstractmethod
     def search(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
         """Return list of (skill_id, score) sorted by score desc."""
@@ -67,7 +74,7 @@ class NumpyVectorIndex(VectorIndex):
         q = np.asarray(query, dtype=np.float64).reshape(-1)
         # cosine: assume L2-normalized
         scores = self._mat @ q
-        order = np.argsort(-scores)
+        order = sorted(range(len(self._ids)), key=lambda i: (-scores[i], self._ids[i]))
         out: list[tuple[str, float]] = []
         for i in order[:top_k]:
             out.append((self._ids[int(i)], float(scores[int(i)])))
@@ -76,21 +83,32 @@ class NumpyVectorIndex(VectorIndex):
     def count(self) -> int:
         return len(self._ids)
 
+    def upsert_many(self, items: Sequence[tuple[str, np.ndarray]]) -> None:
+        values = {sid: self._mat[i] for i, sid in enumerate(self._ids)}
+        for sid, vector in items:
+            vector = np.asarray(vector, dtype=np.float64).reshape(-1)
+            if vector.shape != (self.dim,):
+                raise ValueError(f"expected dim {self.dim}, got {vector.shape}")
+            values[sid] = vector
+        self._ids = list(values)
+        self._mat = np.stack(list(values.values())) if values else None
+        self._save()
+
     def _save(self) -> None:
         if not self.persist_path or self._mat is None:
             return
         self.persist_path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             self.persist_path,
-            ids=np.array(self._ids, dtype=object),
+            ids=np.array(self._ids, dtype=str),
             mat=self._mat,
         )
 
     def _load(self) -> None:
         assert self.persist_path is not None
-        data = np.load(self.persist_path, allow_pickle=True)
-        self._ids = [str(x) for x in data["ids"].tolist()]
-        self._mat = data["mat"]
+        with np.load(self.persist_path, allow_pickle=False) as data:
+            self._ids = [str(x) for x in data["ids"].tolist()]
+            self._mat = data["mat"]
 
 
 class SqliteVectorIndex(VectorIndex):
@@ -146,7 +164,7 @@ class SqliteVectorIndex(VectorIndex):
         self._conn.commit()
 
     def search(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
-        # Fallback cosine in Python over stored blobs if vector SQL API differs
+        # Exact cosine in Python over stored blobs (no native ANN implementation).
         cur = self._conn.execute("SELECT skill_id, embedding FROM skill_vectors")
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         scored: list[tuple[str, float]] = []
@@ -159,6 +177,16 @@ class SqliteVectorIndex(VectorIndex):
             scored.append((sid, score))
         scored.sort(key=lambda x: (-x[1], x[0]))
         return scored[:top_k]
+
+    def upsert_many(self, items: Sequence[tuple[str, np.ndarray]]) -> None:
+        with self._conn:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO skill_vectors(skill_id, embedding) VALUES (?, ?)",
+                [(sid, np.asarray(vector, dtype=np.float32).tobytes()) for sid, vector in items],
+            )
+
+    def close(self) -> None:
+        self._conn.close()
 
     def count(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM skill_vectors").fetchone()

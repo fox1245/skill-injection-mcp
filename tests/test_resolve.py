@@ -111,7 +111,7 @@ def test_missing_skill_no_match(engine: SkillInjectEngine):
                     search_query="HelmKubernetesKubectlZZZNOMATCH",
                 )
             ],
-            constraints=Constraints(min_score=0.05, top_k=3),
+            constraints=Constraints(top_k=3),
         )
     )
     assert resp.match_status == MatchStatus.no_match
@@ -214,7 +214,7 @@ def test_required_unresolved_not_complete(engine: SkillInjectEngine):
                     search_query="IstioXYZUNIQUE999Federation",
                 ),
             ],
-            constraints=Constraints(min_score=0.05, top_k=3),
+            constraints=Constraints(top_k=3),
         )
     )
     missing = next(c for c in resp.checks if c.requirement_id == "missing-k8s")

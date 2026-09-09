@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
 
@@ -20,110 +22,56 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             meta = {}
     except yaml.YAMLError:
         meta = {}
-    body = parts[2].lstrip("\n")
-    return meta, body
+    return meta, parts[2].lstrip("\n")
 
 
 def scan_skills(skills_dir: Path) -> list[SkillMeta]:
     skills_dir = Path(skills_dir)
-    results: list[SkillMeta] = []
-    if not skills_dir.exists():
-        return results
+    results = []
     for skill_md in sorted(skills_dir.rglob("SKILL.md")):
-        text = skill_md.read_text(encoding="utf-8")
-        fm, body = _parse_frontmatter(text)
-        folder_id = skill_md.parent.name
-        skill_id = str(fm.get("id") or fm.get("skill_id") or folder_id)
-        name = str(fm.get("name") or skill_id)
-        description = str(fm.get("description") or "")
-        depends_on = fm.get("depends_on") or fm.get("dependencies") or []
-        if isinstance(depends_on, str):
-            depends_on = [depends_on]
+        raw = skill_md.read_bytes()
+        fm, body = _parse_frontmatter(raw.decode("utf-8-sig"))
+        skill_id = str(fm.get("id") or fm.get("skill_id") or skill_md.parent.name)
+        deps = fm.get("depends_on") or fm.get("dependencies") or []
         tags = fm.get("tags") or []
+        if isinstance(deps, str):
+            deps = [deps]
         if isinstance(tags, str):
             tags = [tags]
-        try:
-            # POSIX-relative so skill indexes are portable across OS
-            # when the skills tree layout is the same.
-            rel_path = skill_md.resolve().relative_to(skills_dir.resolve()).as_posix()
-        except ValueError:
-            rel_path = skill_md.as_posix()
-        results.append(
-            SkillMeta(
-                skill_id=skill_id,
-                name=name,
-                description=description,
-                body=body,
-                path=rel_path,
-                depends_on=[str(d) for d in depends_on],
-                tags=[str(t) for t in tags],
-                frontmatter=fm,
-            )
-        )
+        results.append(SkillMeta(
+            skill_id=skill_id, name=str(fm.get("name") or skill_id),
+            description=str(fm.get("description") or ""), body=body,
+            path=skill_md.relative_to(skills_dir).as_posix(),
+            depends_on=[str(d) for d in deps], tags=[str(t) for t in tags],
+            frontmatter=fm, content_hash=hashlib.sha256(raw).hexdigest(),
+        ))
     return results
 
 
 def validate_skill_graph(skills: list[SkillMeta]) -> list[ValidationErrorItem]:
-    errors: list[ValidationErrorItem] = []
-    seen: dict[str, str] = {}
-    for s in skills:
-        if s.skill_id in seen:
-            errors.append(
-                ValidationErrorItem(
-                    code="duplicate_skill_id",
-                    message=f"Duplicate skill_id '{s.skill_id}' at {s.path} (also {seen[s.skill_id]})",
-                    path=s.path,
-                )
-            )
-        else:
-            seen[s.skill_id] = s.path
-
-    ids = {s.skill_id for s in skills}
+    errors = []
+    seen = {}
+    for skill in skills:
+        if skill.skill_id in seen:
+            errors.append(ValidationErrorItem(
+                code="duplicate_skill_id",
+                message=f"Duplicate skill_id '{skill.skill_id}' at {skill.path} "
+                        f"(also {seen[skill.skill_id]})", path=skill.path,
+            ))
+        seen[skill.skill_id] = skill.path
     graph = {s.skill_id: list(s.depends_on) for s in skills}
-
-    # missing deps (warn as validation)
     for sid, deps in graph.items():
-        for d in deps:
-            if d not in ids:
-                errors.append(
-                    ValidationErrorItem(
-                        code="missing_dependency",
-                        message=f"Skill '{sid}' depends on unknown '{d}'",
-                        path=sid,
-                    )
-                )
-
-    # cycle detection (DFS)
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color = {sid: WHITE for sid in graph}
-    stack: list[str] = []
-
-    def visit(u: str) -> bool:
-        color[u] = GRAY
-        stack.append(u)
-        for v in graph.get(u, []):
-            if v not in color:
-                continue
-            if color[v] == GRAY:
-                cycle_path = stack[stack.index(v) :] + [v]
-                errors.append(
-                    ValidationErrorItem(
-                        code="dependency_cycle",
-                        message="Dependency cycle: " + " -> ".join(cycle_path),
-                        path=u,
-                    )
-                )
-                return True
-            if color[v] == WHITE and visit(v):
-                return True
-        stack.pop()
-        color[u] = BLACK
-        return False
-
-    for sid in list(graph):
-        if color[sid] == WHITE:
-            visit(sid)
-
+        for dep in deps:
+            if dep not in graph:
+                errors.append(ValidationErrorItem(
+                    code="missing_dependency", message=f"Skill '{sid}' depends on unknown '{dep}'", path=sid,
+                ))
+    try:
+        TopologicalSorter(graph).prepare()
+    except CycleError as exc:
+        errors.append(ValidationErrorItem(
+            code="dependency_cycle", message=f"Dependency cycle: {exc.args[1]}",
+        ))
     return errors
 
 
@@ -131,19 +79,47 @@ class SkillRegistry:
     def __init__(self) -> None:
         self.skills: dict[str, SkillMeta] = {}
         self.validation_errors: list[ValidationErrorItem] = []
+        self.duplicate_ids: set[str] = set()
 
     def load(self, skills_dir: Path) -> list[SkillMeta]:
         skills = scan_skills(skills_dir)
         self.validation_errors = validate_skill_graph(skills)
-        # keep first occurrence on duplicates for indexing, but errors recorded
         self.skills = {}
-        for s in skills:
-            if s.skill_id not in self.skills:
-                self.skills[s.skill_id] = s
-        return list(self.skills.values())
+        self.duplicate_ids = set()
+        for skill in skills:
+            if skill.skill_id in self.skills:
+                self.duplicate_ids.add(skill.skill_id)
+            else:
+                self.skills[skill.skill_id] = skill
+        return self.all()
 
     def get(self, skill_id: str) -> SkillMeta | None:
         return self.skills.get(skill_id)
 
     def all(self) -> list[SkillMeta]:
         return list(self.skills.values())
+
+    def dependency_closure(self, skill_id: str) -> tuple[list[str], list[str]]:
+        graph = {}
+        pending = [skill_id]
+        errors = []
+        visited = set()
+        while pending:
+            sid = pending.pop()
+            if sid in visited:
+                continue
+            visited.add(sid)
+            skill = self.get(sid)
+            if skill is None:
+                errors.append(f"missing_dependency:{sid}")
+                continue
+            if sid in self.duplicate_ids:
+                errors.append(f"duplicate_skill_id:{sid}")
+            graph[sid] = skill.depends_on
+            pending.extend(reversed(skill.depends_on))
+        if errors:
+            return [], errors
+        try:
+            return list(TopologicalSorter(graph).static_order()), []
+        except CycleError:
+            return [], [f"dependency_cycle:{skill_id}"]

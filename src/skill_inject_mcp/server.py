@@ -1,69 +1,52 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
 from skill_inject_mcp.engine import SkillInjectEngine
-from skill_inject_mcp.schemas import SkillInjectRequest
+from skill_inject_mcp.schemas import SkillInjectRequest, SkillInjectResponse
 
 mcp = FastMCP(
     "skill-inject-mcp",
     instructions=(
-        "Skill Injection MCP: call resolve_skills before inventing workflows. "
-        "Only match_status=complete means all required skills are bound. "
-        "See AGENTS.md nudge on every resolve_skills response."
+        "Resolve required capabilities before inventing workflows. complete means all required "
+        "requirements have conservative textual skill support and valid dependencies, not that "
+        "execution succeeded. Inspect checks, missing_terms and evidence. Unknown checks need review."
     ),
 )
-
 _engine = SkillInjectEngine()
 
 
 @mcp.tool()
-def resolve_skills(request: dict[str, Any] | SkillInjectRequest) -> dict[str, Any]:
-    """Resolve task requirements to indexed Agent Skills via hybrid retrieval.
+def resolve_skills(request: SkillInjectRequest) -> SkillInjectResponse:
+    """Resolve requirements to Agent Skills; search_query is only a retrieval hint.
 
-    Pass a SkillInjectRequest (schema_version 1.0) with requirements[].
-    Optional constraints.top_k (int >= 1) controls how many hybrid candidates
-    are walked and returned as evidence per requirement; default is 5 when omitted
-    (internal sparse/dense channel still uses retrieve_top_k, typically 20).
-    Returns SkillInjectResponse. Never complete if required requirements are unmatched.
+    constraints.top_k limits returned evidence (default 5), not acceptance checks.
+    Unknown fields and schema versions are rejected. Complete means required
+    textual support and dependencies were checked, not successful execution.
     """
-    if isinstance(request, SkillInjectRequest):
-        req = request
-    else:
-        req = SkillInjectRequest.model_validate(request)
-    resp = _engine.resolve(req)
-    payload = resp.model_dump(mode="json")
-    # Agents.md-style nudge always present
-    nudge = (
-        "NUDGE: If match_status != complete, do not proceed as if skills are bound. "
-        "Address gaps / validation_errors or call reindex_skills."
-    )
-    payload.setdefault("notes", [])
-    if nudge not in payload["notes"]:
-        payload["notes"].insert(0, nudge)
-    return payload
+    return _engine.resolve(request)
 
 
 @mcp.tool()
 def reindex_skills(skills_dir: str | None = None) -> dict[str, Any]:
-    """Rescan skills directory and rebuild sparse + dense indexes."""
+    """Rebuild indexes; reuse unchanged document vectors and preserve the old snapshot on failure."""
     from pathlib import Path
-
-    info = _engine.reindex(skills_dir=Path(skills_dir) if skills_dir else None)
-    return info
+    return _engine.reindex(skills_dir=Path(skills_dir) if skills_dir else None)
 
 
 @mcp.tool()
-def get_skill_body(skill_id: str) -> dict[str, Any]:
-    """Return the full SKILL.md body for a skill_id."""
-    return _engine.get_skill_body(skill_id)
+def get_skill_body(skill_id: str, registry_snapshot: str | None = None) -> dict[str, Any]:
+    """Read the indexed SKILL.md; optionally require the snapshot returned by resolve_skills."""
+    return _engine.get_skill_body(skill_id, registry_snapshot)
 
 
 def main() -> None:
-    mcp.run(transport="stdio")
+    try:
+        mcp.run(transport="stdio")
+    finally:
+        _engine.close()
 
 
 if __name__ == "__main__":

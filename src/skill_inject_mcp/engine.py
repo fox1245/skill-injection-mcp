@@ -1,395 +1,230 @@
 from __future__ import annotations
 
+from graphlib import TopologicalSorter
 from pathlib import Path
+from threading import RLock
 
 from skill_inject_mcp.config import Settings, get_settings
-from skill_inject_mcp.embed.embedder import build_embedder
-from skill_inject_mcp.index.sparse import SparseIndex
-from skill_inject_mcp.index.vector import build_vector_index
+from skill_inject_mcp.index.snapshot import build_snapshot, embedding_identity, fingerprint
 from skill_inject_mcp.registry.scan import SkillRegistry
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.retrieve.multi_query import expand_queries
 from skill_inject_mcp.schemas import (
-    CheckResult,
-    EvidenceItem,
-    GapItem,
-    MatchStatus,
-    PlanBinding,
-    SkillInjectRequest,
-    SkillInjectResponse,
-    ValidationErrorItem,
+    CheckResult, EvidenceItem, GapItem, MatchStatus, PlanBinding,
+    SkillInjectRequest, SkillInjectResponse,
 )
-
-
-def expand_query(description: str, search_query: str | None) -> str:
-    if search_query and search_query.strip():
-        return search_query.strip()
-    # Server-side expansion: keep description + light keyword hints
-    return description.strip()
+from skill_inject_mcp.validation import validate_request
 
 
 class SkillInjectEngine:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self.registry = SkillRegistry()
-        self.sparse: SparseIndex | None = None
-        self.dense = None
+        self.sparse = self.dense = self.embedder = self.retriever = None
         self.dense_backend = "numpy"
-        self.embedder = None
         self.embedder_degraded = False
-        self.retriever: HybridRetriever | None = None
         self._indexed = False
+        self._snapshot = None
+        self._lock = RLock()
 
     def ensure_index(self, skills_dir: Path | None = None) -> dict:
-        return self.reindex(skills_dir=skills_dir)
+        with self._lock:
+            return self._index(skills_dir, force=False)
 
     def reindex(self, skills_dir: Path | None = None) -> dict:
-        s = self.settings
-        root = Path(skills_dir) if skills_dir else Path(s.skills_dir)
-        index_dir = Path(s.index_dir)
-        index_dir.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            return self._index(skills_dir, force=True)
 
-        skills = self.registry.load(root)
-        self.embedder, self.embedder_degraded = build_embedder(
-            api_key=s.resolve_api_key(),
-            use_fake=s.use_fake_embedder,
-            model=s.embedding_model,
-            dim=s.embedding_dim,
-            base_url=s.embedding_base_url,
+    def _index(self, skills_dir: Path | None, *, force: bool) -> dict:
+        root = Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve()
+        if not root.is_dir():
+            raise ValueError(f"Skills directory does not exist: {root}")
+        registry = SkillRegistry()
+        registry.load(root)
+        snapshot_id = fingerprint(registry, root, embedding_identity(self.settings))
+        if not force and self._snapshot is not None and self._snapshot.snapshot_id == snapshot_id:
+            return self._snapshot.info()
+        candidate = build_snapshot(self.settings, registry, root, snapshot_id, self._snapshot)
+        retriever = HybridRetriever(
+            sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
+            skills=registry.skills, rrf_k=self.settings.rrf_k,
+            retrieve_top_k=self.settings.retrieve_top_k,
         )
-        self.dense, self.dense_backend = build_vector_index(index_dir, dim=s.embedding_dim)
-        self.sparse = SparseIndex(index_dir / "sparse.sqlite")
-
-        self.dense.clear()
-        self.sparse.clear()
-
-        docs = []
-        ids = []
-        for skill in skills:
-            text = f"{skill.name}\n{skill.description}\n{skill.body}\n{' '.join(skill.tags)}"
-            docs.append(text)
-            ids.append(skill.skill_id)
-            self.sparse.upsert(
-                skill.skill_id,
-                skill.name,
-                skill.description,
-                skill.body,
-                skill.tags,
-            )
-
-        if docs:
-            vectors = self.embedder.embed_documents(docs)
-            for sid, vec in zip(ids, vectors):
-                self.dense.upsert(sid, vec)
-
-        self.retriever = HybridRetriever(
-            sparse=self.sparse,
-            dense=self.dense,
-            embedder=self.embedder,
-            skills=self.registry.skills,
-            rrf_k=s.rrf_k,
-            retrieve_top_k=s.retrieve_top_k,
-        )
+        previous = self._snapshot
+        self._snapshot = candidate
+        self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
+        self.embedder = candidate.embedder
+        self.embedder_degraded = candidate.embedder_degraded
+        self.dense_backend, self.retriever = candidate.backend, retriever
         self._indexed = True
-        return {
-            "skills_indexed": len(skills),
-            "dense_backend": self.dense_backend,
-            "embedder": type(self.embedder).__name__,
-            "embedder_degraded": self.embedder_degraded,
-            "validation_errors": [e.model_dump() for e in self.registry.validation_errors],
-            "skills_dir": str(root.resolve()),
-        }
+        if previous is not None:
+            previous.close()
+        return candidate.info()
 
-    def get_skill_body(self, skill_id: str) -> dict:
-        if not self._indexed:
-            self.ensure_index()
-        skill = self.registry.get(skill_id)
-        if not skill:
-            return {"found": False, "skill_id": skill_id, "body": None}
-        return {
-            "found": True,
-            "skill_id": skill.skill_id,
-            "name": skill.name,
-            "description": skill.description,
-            "path": skill.path,
-            "body": skill.body,
-            "depends_on": skill.depends_on,
-            "tags": skill.tags,
-        }
+    def close(self) -> None:
+        with self._lock:
+            if self._snapshot is not None:
+                self._snapshot.close()
+                self._snapshot = None
+            self.registry = SkillRegistry()
+            self.sparse = self.dense = self.embedder = self.retriever = None
+            self._indexed = False
+
+    def get_skill_body(self, skill_id: str, registry_snapshot: str | None = None) -> dict:
+        with self._lock:
+            if not self._indexed:
+                self.ensure_index()
+            current = self._snapshot.snapshot_id
+            if registry_snapshot is not None and registry_snapshot != current:
+                return {"found": False, "skill_id": skill_id, "reason": "snapshot_mismatch",
+                        "registry_snapshot": current}
+            skill = self.registry.get(skill_id)
+            if skill is None:
+                return {"found": False, "skill_id": skill_id, "body": None}
+            return {
+                "found": True, "skill_id": skill.skill_id, "name": skill.name,
+                "description": skill.description, "path": skill.path, "body": skill.body,
+                "depends_on": skill.depends_on, "tags": skill.tags,
+                "content_hash": skill.content_hash, "registry_snapshot": current,
+                "skills_dir": str(self._snapshot.root),
+            }
 
     def resolve(self, request: SkillInjectRequest) -> SkillInjectResponse:
-        notes: list[str] = [
-            "AGENTS.md nudge: only treat match_status=complete as skill-backed; "
-            "if partial/no_match, fill gaps or reindex before proceeding."
+        with self._lock:
+            return self._resolve(request)
+
+    def _resolve(self, request: SkillInjectRequest) -> SkillInjectResponse:
+        notes = [
+            "complete means all required requirements have textual skill support and valid "
+            "dependencies; it does not certify execution success. Unknown checks require review."
         ]
-        degraded = False
-        validation_errors: list[ValidationErrorItem] = []
-
+        errors = validate_request(request)
+        if errors:
+            return SkillInjectResponse(
+                match_status=MatchStatus.no_match, validation_errors=errors,
+                checks=[CheckResult(requirement_id=r.id, matched=False, assessment="blocked",
+                                    reason="invalid_request") for r in request.requirements],
+                gaps=[GapItem(requirement_id=r.id, description=r.description, reason="invalid_request")
+                      for r in request.requirements if r.required], notes=notes,
+            )
+        if not request.requirements:
+            return SkillInjectResponse(
+                match_status=MatchStatus.no_match,
+                gaps=[GapItem(requirement_id="*", description="(none)", reason="no requirements provided")],
+                notes=notes,
+            )
         constraints = request.constraints
-        skills_dir = None
-        rerank = self.settings.rerank
-        top_k = self.settings.resolve_top_k
-        min_score = None
-        if constraints:
-            if constraints.skills_dir:
-                skills_dir = Path(constraints.skills_dir)
-            rerank = constraints.rerank
-            if constraints.top_k is not None:
-                top_k = constraints.top_k
-            min_score = constraints.min_score
-
-        if rerank == "qwen3-0.6b":
-            # Stub only: skip rerank and mark degraded
+        root = Path(constraints.skills_dir) if constraints and constraints.skills_dir else None
+        rerank = constraints.rerank if constraints and constraints.rerank is not None else self.settings.rerank
+        top_k = constraints.top_k if constraints and constraints.top_k is not None else self.settings.resolve_top_k
+        min_score = constraints.min_score if constraints else None
+        info = self.ensure_index(skills_dir=root)
+        degraded = self.embedder_degraded
+        if degraded:
+            notes.append("No OPENROUTER_API_KEY; using FakeEmbedder (retriever_degraded)")
+        if rerank != "off":
             degraded = True
             notes.append("rerank=qwen3-0.6b stub: skipped; retriever_degraded=true")
-
-        info = self.ensure_index(skills_dir=skills_dir)
-        if info.get("embedder_degraded"):
-            # Using FakeEmbedder because no API key — acceptable for MVP/tests,
-            # but mark degraded when user expected real embeddings.
-            if not self.settings.use_fake_embedder:
-                degraded = True
-                notes.append("No OPENROUTER_API_KEY; using FakeEmbedder (retriever_degraded)")
-
-        validation_errors.extend(self.registry.validation_errors)
-
-        # Validate requirement DAG (depends_on among requirements)
-        req_ids = {r.id for r in request.requirements}
-        req_graph = {r.id: list(r.depends_on) for r in request.requirements}
-        WHITE, GRAY, BLACK = 0, 1, 2
-        color = {rid: WHITE for rid in req_graph}
-        stack: list[str] = []
-
-        def visit(u: str) -> None:
-            color[u] = GRAY
-            stack.append(u)
-            for v in req_graph.get(u, []):
-                if v not in color:
-                    validation_errors.append(
-                        ValidationErrorItem(
-                            code="unknown_requirement_dependency",
-                            message=f"Requirement '{u}' depends_on unknown '{v}'",
-                            path=u,
-                        )
-                    )
-                    continue
-                if color[v] == GRAY:
-                    cyc = stack[stack.index(v) :] + [v]
-                    validation_errors.append(
-                        ValidationErrorItem(
-                            code="requirement_dependency_cycle",
-                            message="Requirement dependency cycle: " + " -> ".join(cyc),
-                            path=u,
-                        )
-                    )
-                    return
-                if color[v] == WHITE:
-                    visit(v)
-            stack.pop()
-            color[u] = BLACK
-
-        for rid in list(req_graph):
-            if color[rid] == WHITE:
-                visit(rid)
-
-        # Duplicate requirement ids
-        seen_req: set[str] = set()
-        for r in request.requirements:
-            if r.id in seen_req:
-                validation_errors.append(
-                    ValidationErrorItem(
-                        code="duplicate_requirement_id",
-                        message=f"Duplicate requirement id '{r.id}'",
-                        path=r.id,
-                    )
-                )
-            seen_req.add(r.id)
-
-        checks: list[CheckResult] = []
-        evidence: list[EvidenceItem] = []
-        gaps: list[GapItem] = []
-        bindings_by_req: dict[str, str] = {}
-
+        errors = list(self.registry.validation_errors)
+        checks, evidence = [], []
+        bindings = {}
         assert self.retriever is not None
-
-
-        def _runner_up_for(hit, hits):
-            others = [h for h in hits if h.skill_id != hit.skill_id]
-            dense_others = [h for h in others if h.dense_score is not None]
-            if dense_others:
-                return max(dense_others, key=lambda h: float(h.dense_score))
-            return others[0] if others else None
-
         for req in request.requirements:
-            query = expand_query(req.description, req.search_query)
             mq = expand_queries(
-                req.description,
-                req.search_query,
-                api_key=self.settings.resolve_api_key(),
-                enabled=self.settings.multi_query_enabled(),
-                model=self.settings.multi_query_model,
-                base_url=self.settings.embedding_base_url,
-                timeout_s=self.settings.multi_query_timeout_s,
+                req.description, req.search_query, api_key=self.settings.resolve_api_key(),
+                enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
+                base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
             )
             if mq.skipped and self.settings.multi_query_enabled():
-                # Key present and multi-query on, but expander failed/timeout/empty
                 degraded = True
-                notes.append(
-                    f"multi_query_skipped for '{req.id}': {mq.reason or 'unknown'}"
-                )
-            hits = self.retriever.retrieve(
-                query, top_k=max(int(top_k), 1), queries=mq.queries
+                notes.append(f"multi_query_skipped for '{req.id}': {mq.reason or 'unknown'}")
+            # Always retrieve the description as well as hints/expansions.
+            queries = list(dict.fromkeys([req.description, *mq.queries]))
+            # Preserve all channel candidates for verification and dense margins.
+            all_hits = self.retriever.retrieve(
+                req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
             )
-
-            # Optionally filter by min_score (RRF)
-            if min_score is not None:
-                hits = [h for h in hits if h.ranking_score >= min_score]
-
             accepted = None
-            accepted_reason = None
-            top_reject_reason = None
-
-            for hit in hits:
+            accepted_assessment = None
+            first_assessment = None
+            rejection_reason = None
+            for hit in all_hits:
+                if min_score is not None and hit.ranking_score < min_score:
+                    continue
                 skill = self.registry.get(hit.skill_id)
                 if skill is None:
                     continue
-                assessment = evaluate_candidate(
-                    query, skill, hit, _runner_up_for(hit, hits)
-                )
-                if top_reject_reason is None and not assessment.matched:
-                    top_reject_reason = assessment.reason
-                if assessment.matched:
-                    accepted = hit
-                    accepted_reason = assessment.reason
-                    break
+                others = [h for h in all_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
+                runner_up = max(others, key=lambda h: h.dense_score) if others else None
+                assessment = evaluate_candidate(req.description, skill, hit, runner_up)
+                if first_assessment is None:
+                    first_assessment = assessment
+                if not assessment.matched:
+                    continue
+                closure, dependency_errors = self.registry.dependency_closure(skill.skill_id)
+                if dependency_errors:
+                    rejection_reason = "invalid_skill_dependencies"
+                    continue
+                accepted, accepted_assessment = hit, assessment
+                bindings[req.id] = closure
+                break
+            for hit in all_hits[:top_k]:
+                skill = self.registry.get(hit.skill_id)
+                evidence.append(EvidenceItem(
+                    skill_id=hit.skill_id, requirement_id=req.id, ranking_score=hit.ranking_score,
+                    dense_rank=hit.dense_rank, sparse_rank=hit.sparse_rank,
+                    snippet=skill.description if skill else None,
+                    name=skill.name if skill else None, description=skill.description if skill else None,
+                ))
+            assessment = accepted_assessment or first_assessment
+            checks.append(CheckResult(
+                requirement_id=req.id, matched=accepted is not None,
+                skill_id=accepted.skill_id if accepted else None,
+                ranking_score=accepted.ranking_score if accepted else None,
+                dense_rank=accepted.dense_rank if accepted else None,
+                sparse_rank=accepted.sparse_rank if accepted else None,
+                reason=(accepted_assessment.reason if accepted else
+                        rejection_reason or (assessment.reason if assessment else "no eligible candidates")),
+                assessment=("supported" if accepted else "blocked" if rejection_reason else "unknown"),
+                missing_terms=assessment.missing_terms if assessment else [],
+                evidence=assessment.evidence if assessment else [],
+            ))
+        # Propagate unresolved dependencies even when the dependency was optional.
+        by_id = {c.requirement_id: c for c in checks}
+        graph = {r.id: r.depends_on for r in request.requirements}
+        for rid in TopologicalSorter(graph).static_order():
+            unmet = [dep for dep in graph[rid] if dep not in bindings]
+            if unmet:
+                bindings.pop(rid, None)
+                check = by_id[rid]
+                check.matched = False
+                check.skill_id = None
+                check.assessment = "blocked"
+                check.reason = "unresolved_requirement_dependencies: " + ", ".join(unmet)
+        gaps = [GapItem(requirement_id=r.id, description=r.description,
+                        reason=by_id[r.id].reason or "unmatched")
+                for r in request.requirements if r.required and r.id not in bindings]
+        status = MatchStatus.complete if not gaps else MatchStatus.partial if bindings else MatchStatus.no_match
 
-            # Evidence for top candidates whether or not a match was accepted
-            for h in hits[:top_k]:
-                sk = self.registry.get(h.skill_id)
-                evidence.append(
-                    EvidenceItem(
-                        skill_id=h.skill_id,
-                        requirement_id=req.id,
-                        ranking_score=h.ranking_score,
-                        dense_rank=h.dense_rank,
-                        sparse_rank=h.sparse_rank,
-                        snippet=(sk.description if sk else None),
-                        name=(sk.name if sk else None),
-                        description=(sk.description if sk else None),
-                    )
-                )
-
-            if accepted is not None:
-                checks.append(
-                    CheckResult(
-                        requirement_id=req.id,
-                        matched=True,
-                        skill_id=accepted.skill_id,
-                        ranking_score=accepted.ranking_score,
-                        dense_rank=accepted.dense_rank,
-                        sparse_rank=accepted.sparse_rank,
-                        reason=accepted_reason or "lexical+scores",
-                    )
-                )
-                bindings_by_req[req.id] = accepted.skill_id
-            else:
-                reason = (
-                    top_reject_reason
-                    if hits
-                    else "no hybrid candidates"
-                )
-                checks.append(
-                    CheckResult(
-                        requirement_id=req.id,
-                        matched=False,
-                        reason=reason,
-                    )
-                )
-                if req.required:
-                    gaps.append(
-                        GapItem(
-                            requirement_id=req.id,
-                            description=req.description,
-                            reason=reason or "no matching skill found",
-                        )
-                    )
-
-        # Required unresolved ⇒ not complete
-        required_ids = [r.id for r in request.requirements if r.required]
-        unresolved_required = [rid for rid in required_ids if rid not in bindings_by_req]
-
-        # If validation errors exist that are structural, force non-complete
-        blocking_codes = {
-            "duplicate_skill_id",
-            "dependency_cycle",
-            "requirement_dependency_cycle",
-            "duplicate_requirement_id",
-        }
-        has_blocking = any(e.code in blocking_codes for e in validation_errors)
-
-        if has_blocking:
-            match_status = MatchStatus.no_match if not bindings_by_req else MatchStatus.partial
-            notes.append("Blocking validation_errors present; cannot be complete")
-        elif not request.requirements:
-            match_status = MatchStatus.no_match
-            gaps.append(
-                GapItem(
-                    requirement_id="*",
-                    description="(none)",
-                    reason="no requirements provided",
-                )
-            )
-        elif unresolved_required:
-            if bindings_by_req:
-                match_status = MatchStatus.partial
-            else:
-                match_status = MatchStatus.no_match
-        else:
-            # all required matched
-            optional_unmatched = [
-                r.id
-                for r in request.requirements
-                if (not r.required) and r.id not in bindings_by_req
-            ]
-            match_status = MatchStatus.complete
-            if optional_unmatched:
-                notes.append(
-                    f"Optional requirements unmatched (still complete): {optional_unmatched}"
-                )
-
-        # Hard rule: never complete if any required unmatched
-        if unresolved_required and match_status == MatchStatus.complete:
-            match_status = MatchStatus.partial
-
-        plan_bindings: list[PlanBinding] = []
-        if request.draft_plan:
+        plan_bindings = []
+        if request.draft_plan is not None:
             for step in request.draft_plan.steps:
-                sids = []
-                for rid in step.requirement_ids:
-                    if rid in bindings_by_req:
-                        sids.append(bindings_by_req[rid])
-                plan_bindings.append(
-                    PlanBinding(
-                        step_id=step.id,
-                        requirement_ids=list(step.requirement_ids),
-                        skill_ids=sids,
-                    )
-                )
+                skill_ids = list(dict.fromkeys(
+                    sid for rid in step.requirement_ids for sid in bindings.get(rid, [])
+                ))
+                plan_bindings.append(PlanBinding(
+                    step_id=step.id, requirement_ids=step.requirement_ids, skill_ids=skill_ids,
+                ))
         else:
-            for rid, sid in bindings_by_req.items():
-                plan_bindings.append(
-                    PlanBinding(step_id=f"auto:{rid}", requirement_ids=[rid], skill_ids=[sid])
-                )
-
+            for rid in TopologicalSorter(graph).static_order():
+                if rid in bindings:
+                    plan_bindings.append(PlanBinding(
+                        step_id=f"auto:{rid}", requirement_ids=[rid], skill_ids=bindings[rid],
+                    ))
         return SkillInjectResponse(
-            match_status=match_status,
-            checks=checks,
-            evidence=evidence,
-            gaps=gaps,
-            validation_errors=validation_errors,
-            retriever_degraded=degraded,
-            plan_bindings=plan_bindings,
-            skills_considered=len(self.registry.skills),
-            notes=notes,
+            match_status=status, checks=checks, evidence=evidence, gaps=gaps,
+            validation_errors=errors, retriever_degraded=degraded, plan_bindings=plan_bindings,
+            skills_considered=len(self.registry.skills), notes=notes,
+            registry_snapshot=info.get("registry_snapshot"),
         )

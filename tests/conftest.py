@@ -22,8 +22,24 @@ def engine(tmp_path: Path, skills_dir: Path) -> SkillInjectEngine:
         skills_dir=skills_dir,
         index_dir=tmp_path / "index",
         use_fake_embedder=True,
+        multi_query=False,
+        _env_file=None,
         rerank="off",
     )
     eng = SkillInjectEngine(settings=settings)
     eng.reindex()
-    return eng
+    yield eng
+    eng.close()
+
+
+@pytest.fixture(autouse=True)
+def offline_tests(monkeypatch):
+    import httpx
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "")
+    monkeypatch.setenv("SKILL_INJECT_MULTI_QUERY", "false")
+
+    def deny_network(*args, **kwargs):
+        raise AssertionError("Tests must use httpx.MockTransport, not real HTTP")
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny_network)

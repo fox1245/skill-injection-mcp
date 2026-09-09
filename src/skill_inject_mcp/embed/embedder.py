@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import math
-import re
 from abc import ABC, abstractmethod
 from typing import Sequence
 
 import httpx
 import numpy as np
+
+from skill_inject_mcp.text import words
 
 
 def format_query(query: str, *, task: str = "Given a skill requirement, retrieve matching agent skills") -> str:
@@ -80,7 +81,7 @@ class FakeEmbedder(Embedder):
         self.dim = dim
 
     def _tokenize(self, text: str) -> list[str]:
-        raw = re.findall(r"[a-z0-9_\-]+", text.lower())
+        raw = words(text)
         out: list[str] = []
         for t in raw:
             canon = self.SYNONYMS.get(t, t)

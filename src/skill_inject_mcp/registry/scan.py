@@ -42,13 +42,19 @@ def scan_skills(skills_dir: Path) -> list[SkillMeta]:
         tags = fm.get("tags") or []
         if isinstance(tags, str):
             tags = [tags]
+        try:
+            # POSIX-relative so skill indexes are portable across OS
+            # when the skills tree layout is the same.
+            rel_path = skill_md.resolve().relative_to(skills_dir.resolve()).as_posix()
+        except ValueError:
+            rel_path = skill_md.as_posix()
         results.append(
             SkillMeta(
                 skill_id=skill_id,
                 name=name,
                 description=description,
                 body=body,
-                path=str(skill_md.resolve()),
+                path=rel_path,
                 depends_on=[str(d) for d in depends_on],
                 tags=[str(t) for t in tags],
                 frontmatter=fm,

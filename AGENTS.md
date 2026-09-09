@@ -4,6 +4,12 @@
 
 Call `resolve_skills` **before** inventing workflows. Bind required capabilities to indexed Agent Skills. Do **not** treat a response as done unless `match_status == "complete"` and every required requirement has a binding.
 
+## Platform
+
+Runs on Windows and Linux. Install with `pip install -e ".[dev]"` (PowerShell or bash). Start via `skill-inject-mcp` or `python -m skill_inject_mcp`. See README for OS-specific `.env` and PATH tips (LibreOffice PATH caveat is Windows-only).
+
+Skill paths in the registry are POSIX-relative to `skills_dir` so the same skills tree layout indexes portably across OS.
+
 ## Tools
 
 ### resolve_skills
@@ -28,8 +34,13 @@ Return full `SKILL.md` body for a `skill_id`.
 
 ## Ranking
 
-Results ordered by fused `ranking_score` (RRF). Tie-break: RRF desc → dense_rank asc → skill_id asc. Rerank stub: `off` | `qwen3-0.6b` (latter skips and sets `retriever_degraded`).
+Results ordered by fused `ranking_score` (RRF). Tie-break: RRF desc, dense_rank asc, skill_id asc. Rerank stub: `off` | `qwen3-0.6b` (latter skips and sets `retriever_degraded`).
 
 ## Validation
 
 Duplicate skill ids or dependency DAG cycles → `validation_errors` and non-complete status.
+
+## Indexes
+
+- Sparse: SQLite FTS5 (stdlib) on both OS.
+- Dense: optional `sqlite-vector` native extension when loadable; otherwise numpy `.npz` cosine fallback.

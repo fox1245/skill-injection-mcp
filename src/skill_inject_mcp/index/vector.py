@@ -29,7 +29,7 @@ class VectorIndex(ABC):
 
 
 class NumpyVectorIndex(VectorIndex):
-    """In-memory / npz-persisted cosine similarity index (Windows MVP fallback)."""
+    """In-memory / npz-persisted cosine similarity index (fallback when sqlite-vector is unavailable)."""
 
     def __init__(self, dim: int = 1024, persist_path: Path | None = None) -> None:
         self.dim = dim
@@ -166,7 +166,7 @@ class SqliteVectorIndex(VectorIndex):
 
 
 def build_vector_index(index_dir: Path, dim: int = 1024) -> tuple[VectorIndex, str]:
-    """Prefer sqlite-vector; fall back to numpy. Returns (index, backend_name)."""
+    """Prefer optional sqlite-vector native ext; fall back to numpy. Returns (index, backend_name)."""
     index_dir = Path(index_dir)
     index_dir.mkdir(parents=True, exist_ok=True)
     sqlite_path = index_dir / "dense.sqlite"

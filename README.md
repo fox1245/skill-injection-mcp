@@ -2,6 +2,17 @@
 
 Python MCP server that indexes Agent Skills (SKILL.md) and resolves task requirements via hybrid retrieval (dense + sparse BM25 fused with RRF).
 
+
+## Configuration
+
+Copy .env.example to .env and fill in values:
+
+`powershell
+copy .env.example .env
+`
+
+.env is gitignored. Without OPENROUTER_API_KEY, dense retrieval uses FakeEmbedder.
+
 ## Features
 
 - **Dense retrieval**: prefers sqliteai/sqlite-vector when the extension is loadable; otherwise uses a numpy cosine VectorIndex fallback (default on Windows MVP).

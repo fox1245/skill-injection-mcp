@@ -7,6 +7,7 @@ from skill_inject_mcp.embed.embedder import build_embedder
 from skill_inject_mcp.index.sparse import SparseIndex
 from skill_inject_mcp.index.vector import build_vector_index
 from skill_inject_mcp.registry.scan import SkillRegistry
+from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.schemas import (
     CheckResult,
@@ -210,17 +211,13 @@ class SkillInjectEngine:
 
         assert self.retriever is not None
 
-        def _is_confident(hit) -> bool:
-            """Accept a hit only with meaningful sparse BM25 or strong dense cosine.
 
-            Weak FTS OR-matches (near-zero BM25) and sole nearest-neighbor noise
-            must not falsely complete (e.g. install intent vs build-only skill).
-            """
-            if hit.sparse_score is not None and hit.sparse_score >= 0.1:
-                return True
-            if hit.dense_score is not None and hit.dense_score >= 0.35:
-                return True
-            return False
+        def _runner_up_for(hit, hits):
+            others = [h for h in hits if h.skill_id != hit.skill_id]
+            dense_others = [h for h in others if h.dense_score is not None]
+            if dense_others:
+                return max(dense_others, key=lambda h: float(h.dense_score))
+            return others[0] if others else None
 
         for req in request.requirements:
             query = expand_query(req.description, req.search_query)
@@ -230,59 +227,64 @@ class SkillInjectEngine:
             if min_score is not None:
                 hits = [h for h in hits if h.ranking_score >= min_score]
 
-            # Keep only confident candidates
-            hits = [h for h in hits if _is_confident(h)]
+            accepted = None
+            accepted_reason = None
+            top_reject_reason = None
 
-            best = hits[0] if hits else None
-            matched = best is not None
+            for hit in hits:
+                skill = self.registry.get(hit.skill_id)
+                if skill is None:
+                    continue
+                assessment = evaluate_candidate(
+                    query, skill, hit, _runner_up_for(hit, hits)
+                )
+                if top_reject_reason is None and not assessment.matched:
+                    top_reject_reason = assessment.reason
+                if assessment.matched:
+                    accepted = hit
+                    accepted_reason = assessment.reason
+                    break
 
-            if matched and best is not None:
-                skill = self.registry.get(best.skill_id)
+            # Evidence for top candidates whether or not a match was accepted
+            for h in hits[:top_k]:
+                sk = self.registry.get(h.skill_id)
+                evidence.append(
+                    EvidenceItem(
+                        skill_id=h.skill_id,
+                        requirement_id=req.id,
+                        ranking_score=h.ranking_score,
+                        dense_rank=h.dense_rank,
+                        sparse_rank=h.sparse_rank,
+                        snippet=(sk.description if sk else None),
+                        name=(sk.name if sk else None),
+                        description=(sk.description if sk else None),
+                    )
+                )
+
+            if accepted is not None:
                 checks.append(
                     CheckResult(
                         requirement_id=req.id,
                         matched=True,
-                        skill_id=best.skill_id,
-                        ranking_score=best.ranking_score,
-                        dense_rank=best.dense_rank,
-                        sparse_rank=best.sparse_rank,
-                        reason="top hybrid hit",
+                        skill_id=accepted.skill_id,
+                        ranking_score=accepted.ranking_score,
+                        dense_rank=accepted.dense_rank,
+                        sparse_rank=accepted.sparse_rank,
+                        reason=accepted_reason or "lexical+scores",
                     )
                 )
-                evidence.append(
-                    EvidenceItem(
-                        skill_id=best.skill_id,
-                        requirement_id=req.id,
-                        ranking_score=best.ranking_score,
-                        dense_rank=best.dense_rank,
-                        sparse_rank=best.sparse_rank,
-                        snippet=(skill.description if skill else None),
-                        name=(skill.name if skill else None),
-                        description=(skill.description if skill else None),
-                    )
-                )
-                # Also attach near-miss evidence (up to top_k)
-                for h in hits[1:top_k]:
-                    sk = self.registry.get(h.skill_id)
-                    evidence.append(
-                        EvidenceItem(
-                            skill_id=h.skill_id,
-                            requirement_id=req.id,
-                            ranking_score=h.ranking_score,
-                            dense_rank=h.dense_rank,
-                            sparse_rank=h.sparse_rank,
-                            snippet=(sk.description if sk else None),
-                            name=(sk.name if sk else None),
-                            description=(sk.description if sk else None),
-                        )
-                    )
-                bindings_by_req[req.id] = best.skill_id
+                bindings_by_req[req.id] = accepted.skill_id
             else:
+                reason = (
+                    top_reject_reason
+                    if hits
+                    else "no hybrid candidates"
+                )
                 checks.append(
                     CheckResult(
                         requirement_id=req.id,
                         matched=False,
-                        reason="no hybrid candidates",
+                        reason=reason,
                     )
                 )
                 if req.required:
@@ -290,7 +292,7 @@ class SkillInjectEngine:
                         GapItem(
                             requirement_id=req.id,
                             description=req.description,
-                            reason="no matching skill found",
+                            reason=reason or "no matching skill found",
                         )
                     )
 

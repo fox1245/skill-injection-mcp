@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from graphlib import TopologicalSorter
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Thread
+import asyncio
+import time
+import logging
+
+import httpx
 
 from skill_inject_mcp.config import Settings, get_settings
+from skill_inject_mcp.embed.embedder import build_embedder
 from skill_inject_mcp.index.snapshot import build_snapshot, embedding_identity, fingerprint
 from skill_inject_mcp.registry.scan import SkillRegistry
+from skill_inject_mcp.registry.signature import source_signature
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.retrieve.multi_query import expand_queries
@@ -27,8 +34,42 @@ class SkillInjectEngine:
         self.embedder_degraded = False
         self._indexed = False
         self._snapshot = None
+        # Serialize mutating tools and synchronous clients. Hooks never acquire this lock.
         self._lock = RLock()
         self._verifier = SemanticVerifier(cache_size=self.settings.verification_cache_size)
+        self._source_signature = None
+        self._embedders = {}
+        self._chat_client = None
+        # Publication/reader ownership only; no network or index construction under this lock.
+        self._snapshot_guard = RLock()
+        self._refresh_guard = RLock()
+        self._refresh_pending = False
+        self._next_refresh_after = 0.0
+        self._last_refresh_error = None
+        self._closed = False
+        self._cleanup_jobs = set()
+
+    def _selection(self, skills_dir: Path | None = None) -> tuple[str, Path]:
+        if skills_dir is None and self.settings.skill_manifest is not None:
+            return ("manifest", Path(self.settings.skill_manifest).resolve())
+        return ("directory", Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve())
+
+    def _get_embedder(self):
+        identity = (embedding_identity(self.settings), self.settings.embedding_timeout_s, self.settings.query_cache_size)
+        with self._snapshot_guard:
+            if identity not in self._embedders:
+                self._embedders[identity] = build_embedder(
+                    api_key=self.settings.resolve_api_key(), use_fake=self.settings.use_fake_embedder,
+                    model=self.settings.embedding_model, dim=self.settings.embedding_dim,
+                    base_url=self.settings.embedding_base_url, timeout_s=self.settings.embedding_timeout_s,
+                    query_cache_size=self.settings.query_cache_size,
+                )
+            return self._embedders[identity]
+
+    def _get_chat_client(self):
+        if self._chat_client is None:
+            self._chat_client = httpx.Client()
+        return self._chat_client
 
     def ensure_index(self, skills_dir: Path | None = None) -> dict:
         with self._lock:
@@ -39,6 +80,13 @@ class SkillInjectEngine:
             return self._index(skills_dir, force=True)
 
     def _index(self, skills_dir: Path | None, *, force: bool) -> dict:
+        if self._closed:
+            raise RuntimeError("Skill engine is closed")
+        selection = self._selection(skills_dir)
+        signature = source_signature(selection, None if force else self._source_signature)
+        if (not force and self._snapshot is not None and signature == self._source_signature
+                and self._snapshot.identity == embedding_identity(self.settings)):
+            return self._snapshot.info()
         registry = SkillRegistry()
         if skills_dir is None and self.settings.skill_manifest is not None:
             manifest = Path(self.settings.skill_manifest).resolve()
@@ -51,15 +99,21 @@ class SkillInjectEngine:
             registry.load(root)
         snapshot_id = fingerprint(registry, root, embedding_identity(self.settings))
         if not force and self._snapshot is not None and self._snapshot.snapshot_id == snapshot_id:
+            self._source_signature = signature
+            self._snapshot.source_signature = signature
             return self._snapshot.info()
-        candidate = build_snapshot(self.settings, registry, root, snapshot_id, self._snapshot)
+        candidate = build_snapshot(self.settings, registry, root, snapshot_id, self._snapshot,
+                                   embedder_state=self._get_embedder())
         retriever = HybridRetriever(
             sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
             skills=registry.skills, rrf_k=self.settings.rrf_k,
             retrieve_top_k=self.settings.retrieve_top_k,
         )
-        previous = self._snapshot
-        self._snapshot = candidate
+        candidate.source_signature = signature
+        with self._snapshot_guard:
+            previous = self._snapshot
+            self._snapshot = candidate
+            self._source_signature = signature
         self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
         self.embedder = candidate.embedder
         self.embedder_degraded = candidate.embedder_degraded
@@ -71,12 +125,89 @@ class SkillInjectEngine:
 
     def close(self) -> None:
         with self._lock:
-            if self._snapshot is not None:
-                self._snapshot.close()
-                self._snapshot = None
+            self._closed = True
+            with self._snapshot_guard:
+                snapshot, self._snapshot = self._snapshot, None
+                embedders = list(self._embedders.values())
+                self._embedders.clear()
+            if snapshot is not None:
+                snapshot.close()
             self.registry = SkillRegistry()
             self.sparse = self.dense = self.embedder = self.retriever = None
             self._indexed = False
+            self._source_signature = None
+            for embedder, _ in embedders:
+                embedder.close()
+            if self._chat_client is not None:
+                self._chat_client.close()
+                self._chat_client = None
+
+    async def aclose_async_clients(self) -> None:
+        loop = asyncio.get_running_loop()
+        with self._snapshot_guard:
+            embedders = list(self._embedders.values())
+        for embedder, _ in embedders:
+            if getattr(embedder, "_async_loop", None) not in (None, loop):
+                continue  # A synchronous helper must not close another loop's pooled client.
+            await embedder.aclose()
+
+    async def aclose(self) -> None:
+        self._closed = True
+        await self.aclose_async_clients()
+        if self._cleanup_jobs:
+            await asyncio.gather(*tuple(self._cleanup_jobs), return_exceptions=True)
+        await asyncio.to_thread(self.close)
+
+    def defer_snapshot_cleanup(self, cleanup) -> None:
+        job = asyncio.get_running_loop().run_in_executor(None, cleanup)
+        self._cleanup_jobs.add(job)
+        def completed(future):
+            self._cleanup_jobs.discard(future)
+            if not future.cancelled() and future.exception() is not None:
+                logging.getLogger(__name__).warning("Retired index cleanup failed (%s)", type(future.exception()).__name__)
+        job.add_done_callback(completed)
+
+    def acquire_hook_snapshot(self):
+        selection = self._selection()
+        with self._snapshot_guard:
+            snapshot = self._snapshot
+            if (self._closed or snapshot is None or snapshot.source_signature is None
+                    or snapshot.source_signature[0] != selection
+                    or snapshot.identity != embedding_identity(self.settings)):
+                return None
+            return snapshot if snapshot.acquire() else None
+
+    def hook_catalog_state(self, snapshot) -> str:
+        try:
+            current = source_signature(self._selection(), snapshot.source_signature)
+            if current == snapshot.source_signature and snapshot.identity == embedding_identity(self.settings):
+                return "current"
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        self.request_background_refresh()
+        return "last-known"
+
+    def request_background_refresh(self) -> None:
+        with self._refresh_guard:
+            if self._closed or self._refresh_pending or time.monotonic() < self._next_refresh_after:
+                return
+            self._refresh_pending = True
+        def refresh():
+            try:
+                self.ensure_index()
+                self._last_refresh_error = None
+            except Exception as exc:
+                self._last_refresh_error = type(exc).__name__
+            finally:
+                with self._refresh_guard:
+                    self._refresh_pending = False
+                    self._next_refresh_after = time.monotonic() + 1.0
+        try:
+            Thread(target=refresh, name="skill-index-refresh", daemon=True).start()
+        except Exception:
+            with self._refresh_guard:
+                self._refresh_pending = False
+            raise
 
     def get_skill_body(self, skill_id: str, registry_snapshot: str | None = None) -> dict:
         with self._lock:
@@ -148,6 +279,7 @@ class SkillInjectEngine:
                 req.description, req.search_query, api_key=self.settings.resolve_api_key(),
                 enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
                 base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
+                client=self._get_chat_client() if self.settings.multi_query_enabled() else None,
             )
             if mq.skipped and self.settings.multi_query_enabled():
                 degraded = True
@@ -172,6 +304,7 @@ class SkillInjectEngine:
                     max_source_chars=self.settings.verification_max_source_chars,
                     max_tokens=self.settings.verification_max_tokens,
                     max_retries=self.settings.verification_max_retries,
+                    client=self._get_chat_client(),
                 )
                 semantic_assessments = verification.assessments
                 verification_diagnostics.extend(

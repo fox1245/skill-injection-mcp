@@ -23,7 +23,7 @@ def test_acknowledgement_does_not_index(engine, monkeypatch):
 
 
 def test_hook_failure_does_not_block_user(engine, monkeypatch):
-    monkeypatch.setattr(engine, "ensure_index", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(engine, "acquire_hook_snapshot", lambda: (_ for _ in ()).throw(RuntimeError("offline")))
     result = prompt_context(engine, "Implement a retrieval service")
     assert "unavailable" in result["hookSpecificOutput"]["additionalContext"]
     assert "decision" not in result

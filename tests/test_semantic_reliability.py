@@ -211,7 +211,7 @@ def test_engine_exposes_retry_diagnostics_and_configured_budget(engine, monkeypa
         } for s in candidates]}))
     original = engine._verifier.verify
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        monkeypatch.setattr(engine._verifier, "verify", lambda *a, **kw: original(*a, **kw, client=client))
+        monkeypatch.setattr(engine._verifier, "verify", lambda *a, **kw: original(*a, **{**kw, "client": client}))
         result = engine.resolve(SkillInjectRequest(requirements=[Requirement(id="r", description="Install Python packages with pip")]))
     assert result.match_status == "complete" and not result.verification_degraded
     assert [r["max_tokens"] for r in requests] == [6000, 12000]

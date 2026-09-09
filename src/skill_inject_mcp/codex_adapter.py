@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import queue
 import subprocess
 import threading
 from pathlib import Path
 
 from skill_inject_mcp.engine import SkillInjectEngine
+from skill_inject_mcp.retrieve.hybrid import reciprocal_rank_fusion
+from skill_inject_mcp.retrieve.checks import lexical_gate
 
 
 def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
@@ -67,33 +70,86 @@ def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
         process.wait(timeout=10)
 
 
-def prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
-    """Discovery is advisory; binding still requires an explicit structured resolve."""
+def _hook_result(candidates: list, status: str, catalog: str = "unavailable", snapshot: str | None = None) -> dict:
+    context = (
+        "Skill Injection MCP discovery (unverified candidates, not bindings):\n"
+        + json.dumps(candidates, ensure_ascii=False)
+        + f"\nRetrieval: {status}; catalog: {catalog}; registry_snapshot: {snapshot or 'unavailable'}."
+        + "\nFor substantive work, formulate atomic requirements from the full conversation "
+          "and call skill-injection.resolve_skills before committing to a workflow. "
+          "Preserve all user constraints. Read selected skills with get_skill_body and the "
+          "returned registry_snapshot. Never interpret discovery or complete as execution success. "
+          "Do not force irrelevant skills or stop solely because no matching skill exists."
+    )
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
+
+
+async def async_prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
+    """Bound advisory discovery; cancellation reaches the actual async HTTP request."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + engine.settings.hook_timeout_s
     stripped = prompt.strip()
     acknowledgements = {"", "네", "응", "좋아", "고마워", "감사합니다", "ok", "okay", "thanks", "yes", "no"}
     if stripped.casefold().rstrip(".! ") in acknowledgements:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}}
-    with engine._lock:
+    snapshot = None
+    try:
+        snapshot = engine.acquire_hook_snapshot()
+        if snapshot is None:
+            engine.request_background_refresh()
+            if engine._last_refresh_error:
+                return _hook_result([], f"unavailable; catalog refresh failed ({engine._last_refresh_error})")
+            return _hook_result([], "unavailable; index warmup requested")
+        catalog = engine.hook_catalog_state(snapshot)
+        width = engine.settings.retrieve_top_k
+        sparse = snapshot.sparse.search_readonly(stripped, top_k=width)
+        selected = []
+        status = "BM25-only fallback (embedding deadline exceeded)"
+        # Reserve a little time for local ranking, rendering, and cancellation cleanup.
+        remaining = deadline - loop.time() - min(.05, engine.settings.hook_timeout_s * .1)
+        if remaining > 0:
+            try:
+                vector = (await asyncio.wait_for(snapshot.embedder.aembed_queries([stripped]), remaining))[0]
+                dense = snapshot.dense.search_readonly(vector, top_k=width)
+                hits = reciprocal_rank_fusion(dense, sparse, k=engine.settings.rrf_k)
+                selected = [hit.skill_id for hit in hits[:3]]
+                status = "hybrid (query cache or live embedding)"
+            except asyncio.TimeoutError:
+                pass
+            except Exception as exc:
+                status = f"BM25-only fallback (embedding unavailable: {type(exc).__name__})"
+        if status.startswith("BM25-only"):
+            # BM25 ranks every token overlap; it is not confidence. In degraded
+            # discovery, omit weak hits unless the description positively covers
+            # the query terms. Do not infer cross-language support from this filter.
+            for skill_id, score, _ in sparse[:3]:
+                skill = snapshot.registry.get(skill_id)
+                if skill is not None and score > 0 and lexical_gate(
+                    stripped, skill.model_copy(update={"body": ""}),
+                )[0]:
+                    selected.append(skill_id)
+        candidates = []
+        for skill_id in selected:
+            skill = snapshot.registry.get(skill_id)
+            if skill is not None:
+                candidates.append({"skill_id": skill.skill_id, "description": skill.description[:400]})
+        # Source files may have changed while the embedding request was in flight.
+        catalog = engine.hook_catalog_state(snapshot)
+        return _hook_result(candidates, status, catalog, snapshot.snapshot_id)
+    except Exception as exc:
+        return _hook_result([], f"unavailable ({type(exc).__name__})")
+    finally:
+        if snapshot is not None:
+            cleanup = snapshot.release(defer_disposal=True)
+            if cleanup is not None:
+                engine.defer_snapshot_cleanup(cleanup)
+
+
+def prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
+    """Synchronous convenience helper. MCP uses async_prompt_context on its shared loop."""
+    async def run():
         try:
-            engine.ensure_index()
-            hits = engine.retriever.retrieve(stripped, top_k=3, queries=[stripped])
-            candidates = []
-            for hit in hits:
-                skill = engine.registry.get(hit.skill_id)
-                if skill is not None:
-                    candidates.append({"skill_id": skill.skill_id, "description": skill.description[:400]})
-            context = (
-                "Skill Injection MCP discovery (unverified candidates, not bindings):\n"
-                + json.dumps(candidates, ensure_ascii=False)
-                + "\nFor substantive work, formulate atomic requirements from the full conversation "
-                  "and call skill-injection.resolve_skills before committing to a workflow. "
-                  "Preserve all user constraints. Read selected skills with get_skill_body and the "
-                  "returned registry_snapshot. Never interpret discovery or complete as execution success. "
-                  "Do not force irrelevant skills or stop solely because no matching skill exists."
-            )
-        except Exception as exc:
-            context = (
-                f"Skill discovery unavailable ({type(exc).__name__}). "
-                "Use skill-injection.resolve_skills when available; do not invent a binding."
-            )
-    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
+            return await async_prompt_context(engine, prompt)
+        finally:
+            await engine.aclose_async_clients()
+    return asyncio.run(run())

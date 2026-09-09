@@ -44,3 +44,6 @@ def offline_tests(monkeypatch):
         raise AssertionError("Tests must use httpx.MockTransport, not real HTTP")
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny_network)
+    async def deny_async_network(*args, **kwargs):
+        raise AssertionError("Tests must use httpx.MockTransport, not real async HTTP")
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny_async_network)

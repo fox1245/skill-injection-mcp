@@ -136,10 +136,12 @@ class HybridRetriever:
 
         dense_by_query: list[list[tuple[str, float]]] = []
         sparse_by_query: list[list[tuple[str, float, int]]] = []
-        for q in qlist:
+        query_vectors = self.embedder.embed_queries(qlist)
+        if len(query_vectors) != len(qlist):
+            raise ValueError("Query embedding count does not match expanded queries")
+        for q, qvec in zip(qlist, query_vectors):
             sparse_hits = self.sparse.search(q, top_k=self.retrieve_top_k)
             sparse_by_query.append(sparse_hits)
-            qvec = self.embedder.embed_queries([q])[0]
             dense_hits = self.dense.search(qvec, top_k=self.retrieve_top_k)
             dense_by_query.append(dense_hits)
 

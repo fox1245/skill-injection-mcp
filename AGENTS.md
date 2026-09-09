@@ -104,6 +104,8 @@ SKILL_INJECT_SKILL_MANIFEST = "<absolute-path-to-catalog.json>"
 SKILL_INJECT_INDEX_DIR = "<absolute-path-to-local-index-cache>"
 SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE = "true"
 SKILL_INJECT_EMBEDDING_BATCH_SIZE = "32"
+SKILL_INJECT_QUERY_CACHE_SIZE = "512"
+SKILL_INJECT_HOOK_TIMEOUT_S = "2"
 SKILL_INJECT_EMBEDDING_TIMEOUT_S = "180"
 SKILL_INJECT_MULTI_QUERY_TIMEOUT_S = "30"
 SKILL_INJECT_VERIFICATION_TIMEOUT_S = "120"
@@ -125,7 +127,7 @@ Add/update this handler under UserPromptSubmit in hooks.json:
   "server": "skill-injection",
   "tool": "codex_prompt_hook",
   "input": {"prompt": "${prompt}"},
-  "timeout": 240,
+  "timeout": 2,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
@@ -138,7 +140,9 @@ The HTTP read budgets are configurable: embeddings 180 seconds, query expansion
 the same per-request timeout, rather than silently keeping their own defaults.
 
 Codex's tool timeout is an outer deadline (recommended 900 seconds); the advisory
-prompt hook has a 240-second outer deadline. These are not guarantees that an
+prompt hook has a 2-second outer deadline and a separate cancellable async budget.
+Cold hooks return unavailable; stale hooks label their last-known catalog while
+one background refresh runs. These are not guarantees that an
 arbitrary multi-requirement request will finish: each requirement can make several
 HTTP calls. Split large plans into bounded batches when necessary. Keep failure
 and unknown semantics intact; increasing a timeout is not permission to accept an

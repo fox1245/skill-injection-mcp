@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from urllib.parse import quote
 
 from skill_inject_mcp.text import words
 
@@ -24,7 +26,8 @@ class SparseIndex:
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        # Engine writes/main reads are serialized; hooks use separate read-only connections.
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
@@ -63,6 +66,16 @@ class SparseIndex:
         self._conn.commit()
 
     def search(self, query: str, top_k: int = 20) -> list[tuple[str, float, int]]:
+        return self._search(self._conn, query, top_k)
+
+    def search_readonly(self, query: str, top_k: int = 20) -> list[tuple[str, float, int]]:
+        uri = "file:" + quote(self.db_path.resolve().as_posix(), safe="/:") + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            connection.row_factory = sqlite3.Row
+            return self._search(connection, query, top_k)
+
+    @staticmethod
+    def _search(connection, query: str, top_k: int) -> list[tuple[str, float, int]]:
         """Return (skill_id, bm25_score, rank) where rank is 1-based.
 
         FTS5 bm25() returns lower (more negative) for better matches; we negate
@@ -70,7 +83,7 @@ class SparseIndex:
         """
         q = _fts_query(query)
         try:
-            cur = self._conn.execute(
+            cur = connection.execute(
                 """
                 SELECT skill_id, bm25(skills_fts) AS score
                 FROM skills_fts

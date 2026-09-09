@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     embedding_model: str = "qwen/qwen3-embedding-8b"
     embedding_dim: int = Field(default=1024, ge=1)
     embedding_batch_size: int = Field(default=32, ge=1)
+    query_cache_size: int = Field(default=512, ge=0)
+    hook_timeout_s: float = Field(default=2.0, gt=0, allow_inf_nan=False)
     embedding_timeout_s: float = Field(default=EMBEDDING_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
     persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"

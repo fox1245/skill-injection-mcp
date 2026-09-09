@@ -5,8 +5,9 @@ import hashlib
 import json
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 
 import numpy as np
 
@@ -56,6 +57,32 @@ class IndexSnapshot:
     vectors: dict[str, np.ndarray]
     directory: Path
     index_root: Path
+    source_signature: tuple | None = None
+    _lease_lock: Lock = field(default_factory=Lock, repr=False)
+    _leases: int = field(default=0, repr=False)
+    _retired: bool = field(default=False, repr=False)
+    _disposed: bool = field(default=False, repr=False)
+
+    def acquire(self) -> bool:
+        with self._lease_lock:
+            if self._retired:
+                return False
+            self._leases += 1
+            return True
+
+    def release(self, *, defer_disposal: bool = False):
+        with self._lease_lock:
+            if self._leases < 1:
+                raise RuntimeError("Snapshot lease released without acquisition")
+            self._leases -= 1
+            dispose = self._retired and not self._leases and not self._disposed
+            if dispose:
+                self._disposed = True
+        if dispose:
+            if defer_disposal:
+                return self._dispose
+            self._dispose()
+        return None
 
     def info(self) -> dict:
         return {
@@ -69,6 +96,15 @@ class IndexSnapshot:
         }
 
     def close(self) -> None:
+        with self._lease_lock:
+            self._retired = True
+            dispose = not self._leases and not self._disposed
+            if dispose:
+                self._disposed = True
+        if dispose:
+            self._dispose()
+
+    def _dispose(self) -> None:
         self.sparse.close()
         self.dense.close()
         if self.directory.exists():
@@ -78,16 +114,18 @@ class IndexSnapshot:
 def build_snapshot(
     settings: Settings, registry: SkillRegistry, root: Path, snapshot_id: str,
     previous: IndexSnapshot | None,
+    *, embedder_state: tuple[Embedder, bool] | None = None,
 ) -> IndexSnapshot:
     identity = embedding_identity(settings)
     if previous is not None and previous.identity == identity:
-        embedder, degraded = previous.embedder, previous.embedder_degraded
+        embedder, degraded = embedder_state or (previous.embedder, previous.embedder_degraded)
         cached = dict(previous.vectors)
     else:
-        embedder, degraded = build_embedder(
+        embedder, degraded = embedder_state or build_embedder(
             api_key=settings.resolve_api_key(), use_fake=settings.use_fake_embedder,
             model=settings.embedding_model, dim=settings.embedding_dim,
             base_url=settings.embedding_base_url, timeout_s=settings.embedding_timeout_s,
+            query_cache_size=settings.query_cache_size,
         )
         cached = {}
     skills = registry.all()

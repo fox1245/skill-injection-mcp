@@ -172,7 +172,7 @@ def test_engine_semantic_path_has_no_lexical_gate(engine, monkeypatch):
     original_verify = engine._verifier.verify
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
         monkeypatch.setattr(engine._verifier, "verify",
-                            lambda *a, **k: original_verify(*a, **k, client=client))
+                            lambda *a, **k: original_verify(*a, **{**k, "client": client}))
         req = SkillInjectRequest(requirements=[
             Requirement(id="r", description=KOREAN, search_query="unrelated hint"),
         ])
@@ -190,7 +190,7 @@ def test_engine_does_not_fall_back_to_lexical_after_semantic_outage(engine, monk
     original_verify = engine._verifier.verify
     with httpx.Client(transport=httpx.MockTransport(lambda req: httpx.Response(503))) as client:
         monkeypatch.setattr(engine._verifier, "verify",
-                            lambda *a, **k: original_verify(*a, **k, client=client))
+                            lambda *a, **k: original_verify(*a, **{**k, "client": client}))
         result = engine.resolve(SkillInjectRequest(requirements=[
             Requirement(id="r", description=DESCRIPTION),
         ]))

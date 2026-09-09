@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from contextlib import closing
+from urllib.parse import quote
 from typing import Sequence
 
 import numpy as np
@@ -24,6 +26,9 @@ class VectorIndex(ABC):
 
     def close(self) -> None:
         pass
+
+    def search_readonly(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
+        return self.search(query, top_k)
 
     @abstractmethod
     def search(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
@@ -120,7 +125,7 @@ class SqliteVectorIndex(VectorIndex):
         self.dim = dim
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.enable_load_extension(True)
         # Try common extension names; caller should catch failures
         loaded = False
@@ -166,9 +171,20 @@ class SqliteVectorIndex(VectorIndex):
     def search(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
         # Exact cosine in Python over stored blobs (no native ANN implementation).
         cur = self._conn.execute("SELECT skill_id, embedding FROM skill_vectors")
+        return self._score_rows(cur.fetchall(), query, top_k)
+
+    def search_readonly(self, query: np.ndarray, top_k: int = 20) -> list[tuple[str, float]]:
+        import sqlite3
+        uri = "file:" + quote(self.db_path.resolve().as_posix(), safe="/:") + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True)) as connection:
+            rows = connection.execute("SELECT skill_id, embedding FROM skill_vectors").fetchall()
+        return self._score_rows(rows, query, top_k)
+
+    @staticmethod
+    def _score_rows(rows, query: np.ndarray, top_k: int) -> list[tuple[str, float]]:
         q = np.asarray(query, dtype=np.float32).reshape(-1)
         scored: list[tuple[str, float]] = []
-        for sid, blob in cur.fetchall():
+        for sid, blob in rows:
             v = np.frombuffer(blob, dtype=np.float32)
             if v.shape[0] == 0:
                 continue

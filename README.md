@@ -264,6 +264,39 @@ object containing up to three UNVERIFIED candidates. It never blocks the prompt,
 skips simple acknowledgements, and leaves structured requirements and binding to
 resolve_skills. Hook errors are advisory.
 
+The hook uses a published index snapshot and has a 2-second application budget
+(`SKILL_INJECT_HOOK_TIMEOUT_S`). Its embedding request uses HTTPX's async client;
+expiration cancels the actual request, rather than leaving a synchronous worker
+holding the engine lock. Slow resolve/index tools run in worker threads, so they
+cannot block the MCP event loop or hook timer.
+
+On timeout or embedding failure, discovery falls back to BM25 only. Weak local
+hits are omitted unless their description positively covers the query terms;
+negative or cross-language requirements can therefore produce no fallback
+candidates. This is advisory filtering, never semantic acceptance. The context
+labels the retrieval mode and registry snapshot. `resolve_skills` retains its
+original full-source verification and failure semantics.
+
+The server warms the index in the background. A cold hook returns promptly with
+an unavailable context; it does not wait for initial document embeddings. File
+changes schedule at most one background refresh. Until it completes, the hook
+explicitly identifies its last-known catalog. Reader leases keep an old index
+alive until in-flight hooks finish, including during replacement or shutdown.
+
+Exact query embeddings are shared between hook and resolve with a bounded,
+process-local LRU (`SKILL_INJECT_QUERY_CACHE_SIZE=512`; 0 disables it). Keys are
+hashed and include model, dimension, endpoint and instruction identity. Cache
+entries contain vectors, not raw query text; cancelled/invalid batches are never
+cached. HTTP connections are reused and expanded queries are embedded together
+in a single request while preserving RRF ranking behavior.
+
+Unchanged catalogs reuse parsed skills after inexpensive file-stat checks.
+Manifest edits, ordinary skill edits, additions/deletions and root/model changes
+invalidate the index. If an external tool preserves file metadata while changing
+content, call `reindex_skills` to force a full content read. Python async callers
+should use `async_prompt_context` and await `engine.aclose()` at shutdown; the
+synchronous `prompt_context` convenience helper closes its per-call async client.
+
 Configure a native MCP hook in Codex versions supporting mcp_tool handlers:
 
 ```json
@@ -272,7 +305,7 @@ Configure a native MCP hook in Codex versions supporting mcp_tool handlers:
   "server": "skill-injection",
   "tool": "codex_prompt_hook",
   "input": {"prompt": "${prompt}"},
-  "timeout": 240,
+  "timeout": 2,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
@@ -298,8 +331,9 @@ Timeouts also apply when a caller supplies an HTTP client. Embedding timeout err
 identify the timeout type and configured read budget without including credentials.
 
 For Codex registration, use startup_timeout_sec=60, tool_timeout_sec=900 and a
-240-second UserPromptSubmit hook timeout. The HTTP values are per-I/O budgets;
-the Codex values are outer deadlines. Large plans can require multiple requests
+2-second UserPromptSubmit hook timeout. The hook also enforces its own application
+deadline; other HTTP values are per-I/O budgets. The Codex values are outer
+deadlines. Large plans can require multiple requests
 per requirement, so split large plans into smaller batches rather than treating
 these defaults as an unlimited end-to-end allowance. Restart MCP processes after
 changing environment settings.

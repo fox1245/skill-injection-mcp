@@ -136,6 +136,7 @@ class SkillInjectEngine:
             notes.append("rerank=qwen3-0.6b stub: skipped; retriever_degraded=true")
         mode = self.settings.verification_mode
         verification_degraded = False
+        verification_diagnostics = []
         if mode == "lexical":
             notes.append("Lexical fallback is not a cross-language semantic verifier.")
         errors = list(self.registry.validation_errors)
@@ -169,8 +170,14 @@ class SkillInjectEngine:
                     model=self.settings.verification_model, base_url=self.settings.embedding_base_url,
                     timeout_s=self.settings.verification_timeout_s,
                     max_source_chars=self.settings.verification_max_source_chars,
+                    max_tokens=self.settings.verification_max_tokens,
+                    max_retries=self.settings.verification_max_retries,
                 )
                 semantic_assessments = verification.assessments
+                verification_diagnostics.extend(
+                    diagnostic.model_copy(update={"requirement_id": req.id})
+                    for diagnostic in verification.diagnostics
+                )
                 verification_degraded |= verification.degraded
                 if verification.degraded:
                     notes.append(f"Verification degraded for '{req.id}': {verification.reason}")
@@ -269,4 +276,5 @@ class SkillInjectEngine:
             skills_considered=len(self.registry.skills), notes=notes,
             registry_snapshot=info.get("registry_snapshot"),
             verification_mode=mode, verification_degraded=verification_degraded,
+            verification_diagnostics=verification_diagnostics,
         )

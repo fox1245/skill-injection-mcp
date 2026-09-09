@@ -104,6 +104,29 @@ class PlanBinding(ContractModel):
     skill_ids: list[str] = Field(default_factory=list)
 
 
+class VerificationDiagnostic(ContractModel):
+    """Sanitized attempt metadata; never raw content, reasoning, or exception messages."""
+
+    requirement_id: str | None = None
+    code: Literal[
+        "response_truncated", "response_filtered", "response_refused", "unexpected_finish_reason",
+        "invalid_response_json", "invalid_response_envelope", "empty_response_content",
+        "invalid_verdict_json", "invalid_verdict_schema", "candidate_set_mismatch",
+        "invalid_source_reference", "empty_source_reference", "missing_evidence",
+        "supported_with_unmet_requirements", "partial_without_unmet_requirements",
+        "http_timeout", "http_error", "transport_error",
+    ]
+    attempt: int = Field(ge=1)
+    max_tokens: int = Field(ge=1)
+    retrying: bool = False
+    finish_reason: Literal["stop", "length", "content_filter", "tool_calls", "function_call", "error"] | None = None
+    http_status: int | None = None
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    output_chars: int | None = Field(default=None, ge=0)
+
+
 class SkillInjectResponse(ContractModel):
     schema_version: Literal["1.0"] = SCHEMA_VERSION
     match_status: MatchStatus
@@ -114,6 +137,7 @@ class SkillInjectResponse(ContractModel):
     retriever_degraded: bool = False
     verification_degraded: bool = False
     verification_mode: Literal["semantic", "lexical"] | None = None
+    verification_diagnostics: list[VerificationDiagnostic] = Field(default_factory=list)
     plan_bindings: list[PlanBinding] = Field(default_factory=list)
     skills_considered: int = 0
     notes: list[str] = Field(default_factory=list)

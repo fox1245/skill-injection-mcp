@@ -1,0 +1,14 @@
+{
+  "skills": [
+    {"skill_id":"frontend-code","name":"Frontend implementation","description":"Build and redesign responsive websites.","body":"Deliver runnable React, TypeScript, and CSS source code implementing the requested website. Use the brief to choose typography and layout. Do not produce image-only mockups.","path":"frontend-code/SKILL.md"},
+    {"skill_id":"frontend-images","name":"Premium frontend designer","description":"Create premium landing-page design references.","body":"Generate polished images for each landing-page section. This skill outputs image files only. It never writes or implements frontend code.","path":"frontend-images/SKILL.md"},
+    {"skill_id":"prose-editor","name":"Prose editing","description":"Rewrite drafts into clear natural language.","body":"Return a revised draft, preserving facts and the author's personal voice. Remove formulaic AI-writing patterns. This editing workflow always rewrites the supplied draft; it is not an audit-only workflow.","path":"prose-editor/SKILL.md"},
+    {"skill_id":"prose-auditor","name":"Prose pattern audit","description":"Detect AI-writing patterns without rewriting.","body":"Quote affected lines and name each writing pattern. Do not rewrite or score the draft and do not infer who wrote it.","path":"prose-auditor/SKILL.md"}
+  ],
+  "cases": [
+    {"id":"implement-website","description":"Build a landing page for a service. Deliver working React and TypeScript source code; image mockups are not the requested output.","expected_matched":["frontend-code"]},
+    {"id":"design-images","description":"랜딩 페이지의 디자인 참고 이미지만 생성해줘. 코드 구현은 하지 마.","expected_matched":["frontend-images"]},
+    {"id":"audit-prose","description":"초안에서 기계적인 문체 패턴이 있는 구절만 인용해 알려줘. 글을 고쳐 쓰거나 점수를 매기거나 작성자를 추측하지 마.","expected_matched":["prose-auditor"]},
+    {"id":"rewrite-prose","description":"Rewrite this draft to remove formulaic AI-writing patterns while keeping the author's facts and personal voice. Return the revised draft.","expected_matched":["prose-editor"]}
+  ]
+}

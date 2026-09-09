@@ -106,6 +106,29 @@ Whole candidate sources above SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS (defaul
 Validated verdicts are cached by original requirement, complete source, model, endpoint
 and prompt version (256 entries by default).
 
+The verifier reserves 8192 output tokens by default, including reasoning tokens.
+Configure `SKILL_INJECT_VERIFICATION_MAX_TOKENS` to change the initial budget.
+When the provider returns `finish_reason=length`, the partial answer is discarded
+and the exact original request is tried once with twice that budget. Set
+`SKILL_INJECT_VERIFICATION_MAX_RETRIES=0` to disable this recovery (default 1;
+only 0 or 1 is supported). No other error triggers an automatic retry. Sources,
+requirements, provider settings and validation rules remain unchanged on retry.
+
+`verification_diagnostics` reports failed attempts with a stable `code`, requirement
+ID, attempt number, output budget, retry flag and available token usage. For example,
+`response_truncated` distinguishes an exhausted budget from `invalid_source_reference`,
+`candidate_set_mismatch`, malformed JSON, or an HTTP failure. Diagnostics exclude
+credentials, raw provider error bodies, candidate text and reasoning text. A recovered
+attempt can return `verification_degraded=false` while retaining its retry diagnostics;
+an exhausted or otherwise invalid response remains `unknown`. Invalid batch results
+are never cached or accepted, even when their JSON happens to parse.
+
+The retry can add one HTTP call. With the defaults, the two attempts have output
+limits of 8192 and 16384 tokens; these are limits, not guaranteed usage. The configured
+HTTP read budget applies per attempt, and Codex's tool timeout remains the outer deadline.
+See [OpenRouter reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
+and [structured output behavior](https://openrouter.ai/docs/guides/features/structured-outputs).
+
 Translation is not required. Dense retrieval directly embeds the original language;
 BM25 and optional query expansion complement candidate recall. Semantic verification
 does not require any lexical overlap, a fixed cosine threshold or a dense runner-up margin.
@@ -113,6 +136,12 @@ Lexical mode remains available for offline development, but cannot establish cro
 
 Model judgement is not a proof of execution success. Exact quote validation establishes
 that the cited text exists; it does not prove the model interpreted every condition correctly.
+The verifier explicitly checks the requested deliverable: image-only mockup generation,
+for example, does not establish support for implementing working frontend source code.
+Run the opt-in, fixture-only contrast check with
+`python scripts/evaluate_deliverables.py --live --output work/deliverables.json`.
+It checks code versus images and rewriting versus auditing in both directions;
+four synthetic cases are a regression probe, not a general quality guarantee.
 
 ## Live multilingual evaluation
 

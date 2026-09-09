@@ -178,6 +178,12 @@ In semantic mode:
 - Invalid IDs, missing/duplicate results, invented quotes, inconsistent verdicts,
   timeouts and incomplete output remain unknown with `verification_degraded=true`.
 - Do not silently fall back to lexical acceptance after a semantic failure.
+- Inspect `verification_diagnostics` even after successful recovery. Stable codes distinguish
+  truncated responses, invalid JSON/schema, candidate/source mismatches and HTTP failures.
+- Output budget defaults to 8192 reasoning-plus-JSON tokens. Only `finish_reason=length`
+  permits one retry with twice the budget, using the unchanged original request. Configure
+  `SKILL_INJECT_VERIFICATION_MAX_TOKENS` and `SKILL_INJECT_VERIFICATION_MAX_RETRIES` (0 or 1).
+  Every attempt must pass the original validation rules; partial JSON is never accepted.
 - Full sources over the configured size limit remain unknown; no truncation.
 - Verdict caches include original requirement, source content, model, endpoint and prompt version.
 

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     verification_model: str = "openai/gpt-oss-120b"
     verification_top_k: int = Field(default=5, ge=1, le=20)
     verification_timeout_s: float = Field(default=VERIFICATION_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
+    verification_max_tokens: int = Field(default=8192, ge=1)
+    verification_max_retries: int = Field(default=1, ge=0, le=1)
     verification_max_source_chars: int = Field(default=16000, ge=1)
     verification_cache_size: int = Field(default=256, ge=0)
 

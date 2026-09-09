@@ -1,0 +1,38 @@
+[
+  {
+    "id": "negative-1",
+    "language": "en",
+    "expected_skill_id": null,
+    "description": "Implement a Python chess engine using alpha beta pruning."
+  },
+  {
+    "id": "negative-2",
+    "language": "ko",
+    "expected_skill_id": null,
+    "description": "파이썬에서 BM25 검색과 벡터 검색을 모두 구현한다."
+  },
+  {
+    "id": "negative-3",
+    "language": "ja",
+    "expected_skill_id": null,
+    "description": "pipでPythonの依存パッケージをインストールし、Kubernetesクラスタにもデプロイする。"
+  },
+  {
+    "id": "negative-4",
+    "language": "zh",
+    "expected_skill_id": null,
+    "description": "使用 CMake 安装 Python 依赖包，不能使用 pip 或 uv。"
+  },
+  {
+    "id": "negative-5",
+    "language": "vi",
+    "expected_skill_id": null,
+    "description": "Cài đặt các gói Python và bảo đảm không sử dụng mạng."
+  },
+  {
+    "id": "negative-6",
+    "language": "ru",
+    "expected_skill_id": null,
+    "description": "Реализовать поиск BM25 и векторный поиск одним навыком."
+  }
+]

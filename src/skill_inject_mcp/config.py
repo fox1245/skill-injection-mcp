@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     multi_query_model: str = "openai/gpt-oss-120b"
     multi_query_timeout_s: float = 12.0
 
+    verification_mode: Literal["semantic", "lexical"] = "lexical"
+    verification_model: str = "openai/gpt-oss-120b"
+    verification_top_k: int = Field(default=5, ge=1, le=20)
+    verification_timeout_s: float = Field(default=45.0, gt=0)
+    verification_max_source_chars: int = Field(default=16000, ge=1)
+    verification_cache_size: int = Field(default=256, ge=0)
+
     def resolve_api_key(self) -> str | None:
         # Also accept bare OPENROUTER_API_KEY via env without prefix
         import os

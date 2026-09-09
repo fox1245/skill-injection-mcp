@@ -1,0 +1,110 @@
+[
+  {
+    "id": "positive-1",
+    "language": "en",
+    "expected_skill_id": "package-installer",
+    "description": "Install Python project dependencies with pip."
+  },
+  {
+    "id": "positive-2",
+    "language": "ko",
+    "expected_skill_id": "package-installer",
+    "description": "pip으로 파이썬 프로젝트의 의존성 패키지를 설치한다."
+  },
+  {
+    "id": "positive-3",
+    "language": "ja",
+    "expected_skill_id": "package-installer",
+    "description": "pipを使ってPythonプロジェクトの依存パッケージをインストールする。"
+  },
+  {
+    "id": "positive-4",
+    "language": "zh",
+    "expected_skill_id": "package-installer",
+    "description": "使用 pip 安装 Python 项目的依赖包。"
+  },
+  {
+    "id": "positive-5",
+    "language": "vi",
+    "expected_skill_id": "package-installer",
+    "description": "Cài đặt các gói phụ thuộc của dự án Python bằng pip."
+  },
+  {
+    "id": "positive-6",
+    "language": "ru",
+    "expected_skill_id": "package-installer",
+    "description": "Установить зависимости проекта Python с помощью pip."
+  },
+  {
+    "id": "positive-7",
+    "language": "en",
+    "expected_skill_id": "python-bm25",
+    "description": "Implement full-text search in Python using BM25 and SQLite FTS5."
+  },
+  {
+    "id": "positive-8",
+    "language": "ko",
+    "expected_skill_id": "python-bm25",
+    "description": "파이썬에서 BM25와 SQLite FTS5를 이용한 전문 검색을 구현한다."
+  },
+  {
+    "id": "positive-9",
+    "language": "ja",
+    "expected_skill_id": "python-bm25",
+    "description": "PythonでBM25とSQLite FTS5を使った全文検索を実装する。"
+  },
+  {
+    "id": "positive-10",
+    "language": "zh",
+    "expected_skill_id": "python-bm25",
+    "description": "使用 Python、BM25 和 SQLite FTS5 实现全文搜索。"
+  },
+  {
+    "id": "positive-11",
+    "language": "vi",
+    "expected_skill_id": "python-bm25",
+    "description": "Triển khai tìm kiếm toàn văn trong Python bằng BM25 và SQLite FTS5."
+  },
+  {
+    "id": "positive-12",
+    "language": "ru",
+    "expected_skill_id": "python-bm25",
+    "description": "Реализовать полнотекстовый поиск на Python с помощью BM25 и SQLite FTS5."
+  },
+  {
+    "id": "positive-13",
+    "language": "en",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "Store embedding vectors and run cosine similarity search with sqlite-vector."
+  },
+  {
+    "id": "positive-14",
+    "language": "ko",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "sqlite-vector로 임베딩 벡터를 저장하고 코사인 유사도 검색을 수행한다."
+  },
+  {
+    "id": "positive-15",
+    "language": "ja",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "sqlite-vectorで埋め込みベクトルを保存し、コサイン類似度検索を行う。"
+  },
+  {
+    "id": "positive-16",
+    "language": "zh",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "使用 sqlite-vector 存储嵌入向量并执行余弦相似度搜索。"
+  },
+  {
+    "id": "positive-17",
+    "language": "vi",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "Lưu trữ các vectơ nhúng và tìm kiếm độ tương đồng cosin bằng sqlite-vector."
+  },
+  {
+    "id": "positive-18",
+    "language": "ru",
+    "expected_skill_id": "sqlite-vector-adapter",
+    "description": "Хранить векторы эмбеддингов и выполнять поиск по косинусному сходству с sqlite-vector."
+  }
+]

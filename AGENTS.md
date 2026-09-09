@@ -3,8 +3,9 @@
 ## Purpose
 
 Call `resolve_skills` before inventing workflows. Bind required capabilities to indexed Agent Skills.
-Only `match_status == "complete"` means every required requirement has conservative
-textual support and valid dependencies. It does not mean the task has executed successfully.
+Only `match_status == "complete"` means every required requirement passed the
+reported verifier and dependency checks. Inspect `verification_mode`: semantic
+verification and offline lexical matching have different capabilities. It does not mean the task has executed successfully.
 
 ## Platform
 
@@ -23,22 +24,34 @@ Pass a typed `SkillInjectRequest` in the MCP argument named `request`:
 - `draft_plan.steps[]`: unique `id`, `summary`, and valid `requirement_ids`.
 - `constraints`: `skills_dir`, `rerank`, `top_k`, `min_score`.
   These are retrieval settings, not execution permissions or task constraints.
-- `top_k` controls returned evidence only (server default 5). Acceptance and dense
-  runner-up checks use the complete retrieved candidate pool. Internal channel width is 20.
+- `top_k` controls returned evidence only (server default 5). Lexical runner-up checks
+  use the complete retrieved pool; semantic verification has a separate candidate budget.
+  Internal retrieval channel width is 20.
 - Optional multi-query expansion widens retrieval. It cannot certify fulfillment.
 
-Read `checks[].assessment`, `missing_terms`, and positive source `evidence`:
+## Verification
 
-- `supported`: all significant requirement terms appear in positive skill statements,
-  with retrieval support. Names/tags, negative statements, code blocks and excluded
-  sections cannot independently prove support.
-- `unknown`: textual support is incomplete or retrieval evidence is weak.
-- `blocked`: references or required dependencies are unresolved.
+Semantic verification is explicit opt-in via SKILL_INJECT_VERIFICATION_MODE=semantic.
+It sends original requirements and top candidate descriptions/bodies to the configured
+chat endpoint (gpt-oss-120b by default). A key alone does not enable it. Lexical is the
+default offline fallback and does not establish cross-language semantic support.
 
-The verifier is deliberately conservative. It can abstain on valid paraphrases,
-cross-language requirements, negative constraints and nuanced semantic conditions.
-Split compound requirements into atomic needs and review unknown checks; do not
-discard requirements or invent search hints just to obtain complete.
+In semantic mode:
+- Compare meaning across languages, including all capabilities, exclusions and non-goals.
+- Do not require shared words, a cosine cutoff or dense runner-up margin.
+- `search_query` and expanded queries are retrieval hints, never acceptance requirements.
+- `checks[].assessment`: supported, partial, unsupported, unknown, or dependency-blocked.
+- Only supported candidates with valid dependencies are bound.
+- Inspect `candidate_skill_id`, `unmet_requirements` and exact `citations`.
+- Invalid IDs, missing/duplicate results, invented quotes, inconsistent verdicts,
+  timeouts and incomplete output remain unknown with `verification_degraded=true`.
+- Do not silently fall back to lexical acceptance after a semantic failure.
+- Full sources over the configured size limit remain unknown; no truncation.
+- Verdict caches include original requirement, source content, model, endpoint and prompt version.
+
+`verification_top_k` is a server setting (default 5), independent of returned evidence
+width. Split compound requirements when appropriate, without dropping user constraints.
+Exact quote checks verify source existence; model semantic judgement remains fallible.
 
 Every requirement receives a check. A required requirement depending on an unmatched
 optional requirement is still blocked. Bindings include prerequisite skills before
@@ -60,8 +73,8 @@ Returns the indexed body, root, relative path, content hash and snapshot identif
 
 SQLite FTS5 BM25 + dense cosine, fused by RRF (k=60). Tie-break: RRF descending,
 dense rank ascending, skill_id ascending. BM25 values are not confidence probabilities.
-Sparse evidence must be positive; dense-only matches require cosine >=0.45 and margin
->=0.05 (or >=0.55 with truly no runner-up).
+Only lexical fallback applies a positive sparse-score or dense-margin gate.
+Semantic verification uses retrieval scores for ranking, not fulfillment.
 
 Optional sqlite-vector storage uses exact cosine in Python; it is not native ANN.
 Otherwise numpy stores vectors in an NPZ without pickle. Bulk writes persist once per generation.
@@ -71,4 +84,8 @@ Rerank `qwen3-0.6b` remains a stub and sets `retriever_degraded`.
 
 Run `python -m pytest -q`. Tests block real HTTP and use temporary indexes.
 Cover false-complete requests, Korean text, dependency closure, MCP schemas,
-candidate-width invariance, incremental embeddings and failed-refresh preservation.
+candidate-width invariance, incremental embeddings, failed-refresh preservation,
+semantic source-grounding and service-failure handling.
+
+The separate scripts/evaluate_multilingual.py --live command runs a paid, opt-in
+fixture-only cross-language evaluation; it is not part of pytest/CI.

@@ -10,6 +10,7 @@ from skill_inject_mcp.registry.scan import SkillRegistry
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.retrieve.multi_query import expand_queries
+from skill_inject_mcp.retrieve.semantic import SemanticVerifier
 from skill_inject_mcp.schemas import (
     CheckResult, EvidenceItem, GapItem, MatchStatus, PlanBinding,
     SkillInjectRequest, SkillInjectResponse,
@@ -27,6 +28,7 @@ class SkillInjectEngine:
         self._indexed = False
         self._snapshot = None
         self._lock = RLock()
+        self._verifier = SemanticVerifier(cache_size=self.settings.verification_cache_size)
 
     def ensure_index(self, skills_dir: Path | None = None) -> dict:
         with self._lock:
@@ -96,8 +98,8 @@ class SkillInjectEngine:
 
     def _resolve(self, request: SkillInjectRequest) -> SkillInjectResponse:
         notes = [
-            "complete means all required requirements have textual skill support and valid "
-            "dependencies; it does not certify execution success. Unknown checks require review."
+            "complete means all required requirements passed the reported verifier and dependency "
+            "checks; it does not certify execution success. Inspect verification_mode and evidence."
         ]
         errors = validate_request(request)
         if errors:
@@ -126,6 +128,10 @@ class SkillInjectEngine:
         if rerank != "off":
             degraded = True
             notes.append("rerank=qwen3-0.6b stub: skipped; retriever_degraded=true")
+        mode = self.settings.verification_mode
+        verification_degraded = False
+        if mode == "lexical":
+            notes.append("Lexical fallback is not a cross-language semantic verifier.")
         errors = list(self.registry.validation_errors)
         checks, evidence = [], []
         bindings = {}
@@ -145,9 +151,27 @@ class SkillInjectEngine:
             all_hits = self.retriever.retrieve(
                 req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
             )
+            semantic_assessments = {}
+            if mode == "semantic":
+                candidates = [
+                    self.registry.get(hit.skill_id) for hit in all_hits
+                    if (min_score is None or hit.ranking_score >= min_score)
+                    and self.registry.get(hit.skill_id) is not None
+                ][:self.settings.verification_top_k]
+                verification = self._verifier.verify(
+                    req.description, candidates, api_key=self.settings.resolve_api_key(),
+                    model=self.settings.verification_model, base_url=self.settings.embedding_base_url,
+                    timeout_s=self.settings.verification_timeout_s,
+                    max_source_chars=self.settings.verification_max_source_chars,
+                )
+                semantic_assessments = verification.assessments
+                verification_degraded |= verification.degraded
+                if verification.degraded:
+                    notes.append(f"Verification degraded for '{req.id}': {verification.reason}")
             accepted = None
             accepted_assessment = None
             first_assessment = None
+            first_candidate_id = None
             rejection_reason = None
             for hit in all_hits:
                 if min_score is not None and hit.ranking_score < min_score:
@@ -157,9 +181,15 @@ class SkillInjectEngine:
                     continue
                 others = [h for h in all_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
                 runner_up = max(others, key=lambda h: h.dense_score) if others else None
-                assessment = evaluate_candidate(req.description, skill, hit, runner_up)
+                if mode == "semantic":
+                    assessment = semantic_assessments.get(skill.skill_id)
+                    if assessment is None:
+                        continue
+                else:
+                    assessment = evaluate_candidate(req.description, skill, hit, runner_up)
                 if first_assessment is None:
                     first_assessment = assessment
+                    first_candidate_id = hit.skill_id
                 if not assessment.matched:
                     continue
                 closure, dependency_errors = self.registry.dependency_closure(skill.skill_id)
@@ -181,14 +211,19 @@ class SkillInjectEngine:
             checks.append(CheckResult(
                 requirement_id=req.id, matched=accepted is not None,
                 skill_id=accepted.skill_id if accepted else None,
+                candidate_skill_id=accepted.skill_id if accepted else first_candidate_id,
                 ranking_score=accepted.ranking_score if accepted else None,
                 dense_rank=accepted.dense_rank if accepted else None,
                 sparse_rank=accepted.sparse_rank if accepted else None,
                 reason=(accepted_assessment.reason if accepted else
                         rejection_reason or (assessment.reason if assessment else "no eligible candidates")),
-                assessment=("supported" if accepted else "blocked" if rejection_reason else "unknown"),
+                assessment=("supported" if accepted else "blocked" if rejection_reason else
+                            assessment.assessment if assessment else "unknown"),
                 missing_terms=assessment.missing_terms if assessment else [],
                 evidence=assessment.evidence if assessment else [],
+                citations=assessment.citations if assessment else [],
+                unmet_requirements=assessment.unmet_requirements if assessment else [],
+                verifier=mode,
             ))
         # Propagate unresolved dependencies even when the dependency was optional.
         by_id = {c.requirement_id: c for c in checks}
@@ -227,4 +262,5 @@ class SkillInjectEngine:
             validation_errors=errors, retriever_degraded=degraded, plan_bindings=plan_bindings,
             skills_considered=len(self.registry.skills), notes=notes,
             registry_snapshot=info.get("registry_snapshot"),
+            verification_mode=mode, verification_degraded=verification_degraded,
         )

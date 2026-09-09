@@ -10,9 +10,9 @@ from skill_inject_mcp.schemas import SkillInjectRequest, SkillInjectResponse
 mcp = FastMCP(
     "skill-inject-mcp",
     instructions=(
-        "Resolve required capabilities before inventing workflows. complete means all required "
-        "requirements have conservative textual skill support and valid dependencies, not that "
-        "execution succeeded. Inspect checks, missing_terms and evidence. Unknown checks need review."
+        "Resolve required capabilities before inventing workflows. Inspect verification_mode: "
+        "semantic judges original requirements across languages with source citations; lexical is "
+        "an offline fallback. complete does not certify execution success. Review partial/unknown checks."
     ),
 )
 _engine = SkillInjectEngine()
@@ -24,7 +24,7 @@ def resolve_skills(request: SkillInjectRequest) -> SkillInjectResponse:
 
     constraints.top_k limits returned evidence (default 5), not acceptance checks.
     Unknown fields and schema versions are rejected. Complete means required
-    textual support and dependencies were checked, not successful execution.
+    requirements passed the configured verifier and dependencies, not successful execution.
     """
     return _engine.resolve(request)
 

@@ -26,10 +26,14 @@ cp .env.example .env
 
 - **Hybrid retrieval**: SQLite FTS5 BM25 and dense cosine, fused by RRF (k=60).
   Internal retrieval takes the top 20 per query/channel; ties are deterministic.
-- **Conservative verification**: acceptance checks the original requirement, not its
-  search hint. All significant terms need positive textual support. Negative sections,
-  negative sentences, code blocks and names/tags alone do not prove capabilities.
-  Incomplete support produces an unknown check rather than a false complete.
+- **Cross-language verification (opt-in)**: gpt-oss-120b compares the ORIGINAL requirement
+  with each candidate's complete description and body, including non-goals. It checks
+  meaning and constraints rather than shared words or embedding thresholds.
+- **Source-grounded results**: supported / partial / unsupported / unknown verdicts
+  include exact source quotes. IDs, quotes and verdict consistency are checked locally.
+  Invalid responses and service errors remain unknown; they never fall through to lexical acceptance.
+- **Offline fallback**: lexical mode retains conservative textual matching, explicitly
+  labelled as lexical. An API key alone does not enable remote semantic verification.
 - **Unicode text**: sparse retrieval, fake embeddings and evidence tokenization retain
   Korean and other Unicode words.
 - **Strict MCP contract**: typed input/output schemas, supported schema version only,
@@ -75,15 +79,55 @@ including unsupported task constraints. The constraints object configures retrie
 not execution permissions.
 
 Results include match_status, checks, evidence, gaps, validation_errors,
-plan_bindings, retriever_degraded and registry_snapshot. Each check has an assessment
-(supported, unknown or blocked), missing_terms and positive source evidence.
-Complete means every required need has textual skill support and valid dependencies;
-it is not a guarantee of semantic correctness or successful execution.
+plan_bindings, retriever_degraded, registry_snapshot, verification_mode and
+verification_degraded. Each check reports its verifier, assessment, candidate_skill_id,
+unmet_requirements, evidence and exact citations (description/body + quote).
+Only supported candidates with resolved dependencies are bound. Partial, unsupported
+and unknown candidates never produce complete on their own.
 
-Use atomic requirements. The offline verifier is deliberately conservative: valid
-synonyms, cross-language matches, negative constraints and nuanced conditions may
-remain unknown. Review that evidence rather than removing conditions to force a match.
-A no_match result means this registry did not establish support, not that the task is impossible.
+## Semantic verification (explicit opt-in)
+
+Set these in .env to enable cross-language verification:
+
+```dotenv
+SKILL_INJECT_VERIFICATION_MODE=semantic
+SKILL_INJECT_VERIFICATION_MODEL=openai/gpt-oss-120b
+```
+
+This sends each original requirement and the top candidate descriptions/bodies to
+the configured OpenRouter chat endpoint. The default remains lexical; API-key presence
+alone does not opt in. Semantic mode requires a key and returns unknown on failure.
+
+The verifier checks up to SKILL_INJECT_VERIFICATION_TOP_K candidates (default 5),
+independent of constraints.top_k, which controls displayed evidence only.
+Whole candidate sources above SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS (default
+16000 characters) are not sent or silently truncated; those candidates remain unknown.
+Validated verdicts are cached by original requirement, complete source, model, endpoint
+and prompt version (256 entries by default).
+
+Translation is not required. Dense retrieval directly embeds the original language;
+BM25 and optional query expansion complement candidate recall. Semantic verification
+does not require any lexical overlap, a fixed cosine threshold or a dense runner-up margin.
+Lexical mode remains available for offline development, but cannot establish cross-language support.
+
+Model judgement is not a proof of execution success. Exact quote validation establishes
+that the cited text exists; it does not prove the model interpreted every condition correctly.
+
+## Live multilingual evaluation
+
+The opt-in evaluation uses only fixtures/skills and synthetic evals/*.json, never
+the configured user's skill directory. It tests 18 positive requirements across
+English, Korean, Japanese, Chinese, Vietnamese and Russian, plus six negative or
+compound requirements. Translation and multi-query are disabled to isolate dense
+retrieval and semantic verification.
+
+```bash
+python scripts/evaluate_multilingual.py --live --output work/multilingual-report.json
+```
+
+The --live flag authorizes fixture transmission and API usage charges for that run.
+Results are written after each case; three consecutive service failures stop the run.
+See evals/README.md for the measured sample and its limits.
 
 ## Quick start
 
@@ -150,7 +194,7 @@ Both of these work on Windows and Linux after `pip install -e .`:
   computes exact cosine in Python, not native approximate nearest-neighbor search.
   Otherwise it uses numpy with non-pickle NPZ storage.
 - BM25 scores depend on the corpus. They are ranking evidence, not calibrated probabilities.
-  Sparse support requires a positive score after textual verification. Dense-only support
+  In lexical fallback mode, sparse support requires a positive score after textual verification. Dense-only support
   requires cosine >=0.45 and a >=0.05 margin, or >=0.55 with no retrieved competitor.
 - With two RRF channels and k=60, the maximum fused score is 2/61 (about 0.03279).
   Setting constraints.min_score above that excludes every candidate.
@@ -159,5 +203,5 @@ Both of these work on Windows and Linux after `pip install -e .`:
   an abruptly terminated process may leave its generation directory behind.
 - Refresh failures are returned to the caller. The last successful snapshot remains
   available for indexed body reads, but a failed refresh is not presented as current.
-- Tests run without real OpenRouter requests. Live model quality and provider limits
-  require separate integration evaluation.
+- Pytest blocks real HTTP. The separate opt-in live evaluation checks model behaviour;
+  a small fixture evaluation is not a general multilingual quality guarantee.

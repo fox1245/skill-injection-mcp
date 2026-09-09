@@ -38,6 +38,7 @@ def offline_tests(monkeypatch):
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "")
     monkeypatch.setenv("SKILL_INJECT_MULTI_QUERY", "false")
+    monkeypatch.setenv("SKILL_INJECT_VERIFICATION_MODE", "lexical")
 
     def deny_network(*args, **kwargs):
         raise AssertionError("Tests must use httpx.MockTransport, not real HTTP")

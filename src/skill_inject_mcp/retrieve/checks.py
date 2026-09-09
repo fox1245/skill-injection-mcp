@@ -32,6 +32,9 @@ class MatchAssessment:
     assessment: str = "unknown"
     missing_terms: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
+    citations: list[dict[str, str]] = field(default_factory=list)
+    unmet_requirements: list[str] = field(default_factory=list)
+    verifier: str = "lexical"
 
 
 def positive_statements(skill: SkillMeta) -> list[str]:

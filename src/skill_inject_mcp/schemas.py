@@ -53,17 +53,26 @@ class SkillInjectRequest(ContractModel):
     constraints: Constraints | None = None
 
 
+class EvidenceCitation(ContractModel):
+    field: Literal["description", "body"]
+    quote: str = Field(min_length=1)
+
+
 class CheckResult(ContractModel):
     requirement_id: str
     matched: bool
     skill_id: str | None = None
+    candidate_skill_id: str | None = None
     ranking_score: float | None = None
     dense_rank: int | None = None
     sparse_rank: int | None = None
     reason: str | None = None
-    assessment: Literal["supported", "unknown", "blocked"] = "unknown"
+    assessment: Literal["supported", "partial", "unsupported", "unknown", "blocked"] = "unknown"
     missing_terms: list[str] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
+    citations: list[EvidenceCitation] = Field(default_factory=list)
+    unmet_requirements: list[str] = Field(default_factory=list)
+    verifier: Literal["semantic", "lexical"] | None = None
 
 
 class EvidenceItem(ContractModel):
@@ -103,6 +112,8 @@ class SkillInjectResponse(ContractModel):
     gaps: list[GapItem] = Field(default_factory=list)
     validation_errors: list[ValidationErrorItem] = Field(default_factory=list)
     retriever_degraded: bool = False
+    verification_degraded: bool = False
+    verification_mode: Literal["semantic", "lexical"] | None = None
     plan_bindings: list[PlanBinding] = Field(default_factory=list)
     skills_considered: int = 0
     notes: list[str] = Field(default_factory=list)

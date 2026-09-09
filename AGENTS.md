@@ -42,7 +42,7 @@ In semantic mode:
 - `search_query` and expanded queries are retrieval hints, never acceptance requirements.
 - `checks[].assessment`: supported, partial, unsupported, unknown, or dependency-blocked.
 - Only supported candidates with valid dependencies are bound.
-- Inspect `candidate_skill_id`, `unmet_requirements` and exact `citations`.
+- Inspect `candidate_skill_id`, `unmet_requirements` and server-extracted `citations`.
 - Invalid IDs, missing/duplicate results, invented quotes, inconsistent verdicts,
   timeouts and incomplete output remain unknown with `verification_degraded=true`.
 - Do not silently fall back to lexical acceptance after a semantic failure.
@@ -60,7 +60,8 @@ their dependents. Unrelated registry errors are reported without blocking valid 
 ## reindex_skills
 
 Rescan the selected skills root and rebuild a new index generation. Unchanged document
-embeddings are reused during the process lifetime. Normal resolve calls automatically
+embeddings are reused during the process lifetime, and across restarts when
+SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true. Normal resolve calls automatically
 detect content changes and reuse an unchanged snapshot. A failed refresh leaves the
 previous generation intact; the failed request returns an error instead of claiming freshness.
 
@@ -89,3 +90,17 @@ semantic source-grounding and service-failure handling.
 
 The separate scripts/evaluate_multilingual.py --live command runs a paid, opt-in
 fixture-only cross-language evaluation; it is not part of pytest/CI.
+
+## Installed catalogs and Codex hooks
+
+SKILL_INJECT_SKILL_MANIFEST selects the actual enabled catalog exported from Codex
+skills/list, retaining namespaced plugin names and original source_path.
+Do not validate an installation using fixtures alone.
+
+codex_prompt_hook is advisory UserPromptSubmit discovery. It does not bind skills
+or certify support. Use resolve_skills with atomic requirements before substantive
+work and load selected instructions from their original source_path.
+
+For long installed skills, configure an adequate verification_max_source_chars;
+do not silently truncate exclusions. Candidate source IDs are constrained to known
+values and checked against the corresponding original document.

@@ -42,6 +42,14 @@ def get_skill_body(skill_id: str, registry_snapshot: str | None = None) -> dict[
     return _engine.get_skill_body(skill_id, registry_snapshot)
 
 
+
+@mcp.tool()
+def codex_prompt_hook(prompt: str) -> dict[str, Any]:
+    """Codex UserPromptSubmit hook: return advisory skill candidates, never block."""
+    from skill_inject_mcp.codex_adapter import prompt_context
+    return prompt_context(_engine, prompt)
+
+
 def main() -> None:
     try:
         mcp.run(transport="stdio")

@@ -39,11 +39,16 @@ class SkillInjectEngine:
             return self._index(skills_dir, force=True)
 
     def _index(self, skills_dir: Path | None, *, force: bool) -> dict:
-        root = Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve()
-        if not root.is_dir():
-            raise ValueError(f"Skills directory does not exist: {root}")
         registry = SkillRegistry()
-        registry.load(root)
+        if skills_dir is None and self.settings.skill_manifest is not None:
+            manifest = Path(self.settings.skill_manifest).resolve()
+            registry.load_manifest(manifest)
+            root = manifest.parent
+        else:
+            root = Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve()
+            if not root.is_dir():
+                raise ValueError(f"Skills directory does not exist: {root}")
+            registry.load(root)
         snapshot_id = fingerprint(registry, root, embedding_identity(self.settings))
         if not force and self._snapshot is not None and self._snapshot.snapshot_id == snapshot_id:
             return self._snapshot.info()
@@ -89,6 +94,7 @@ class SkillInjectEngine:
                 "description": skill.description, "path": skill.path, "body": skill.body,
                 "depends_on": skill.depends_on, "tags": skill.tags,
                 "content_hash": skill.content_hash, "registry_snapshot": current,
+                "source_path": skill.source_path,
                 "skills_dir": str(self._snapshot.root),
             }
 

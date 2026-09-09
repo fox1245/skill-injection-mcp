@@ -18,6 +18,8 @@ class Settings(BaseSettings):
         default_factory=lambda: Path("fixtures/skills"),
         description="Root directory containing skill folders with SKILL.md",
     )
+    skill_manifest: Path | None = None
+
     index_dir: Path = Field(
         default_factory=lambda: Path(".skill_inject_index"),
         description="Directory for SQLite indexes",
@@ -26,6 +28,7 @@ class Settings(BaseSettings):
     embedding_model: str = "qwen/qwen3-embedding-8b"
     embedding_dim: int = Field(default=1024, ge=1)
     embedding_batch_size: int = Field(default=32, ge=1)
+    persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
     rrf_k: int = Field(default=60, ge=1)

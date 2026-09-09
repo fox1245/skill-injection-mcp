@@ -130,3 +130,4 @@ class SkillMeta(ContractModel):
     tags: list[str] = Field(default_factory=list)
     frontmatter: dict[str, Any] = Field(default_factory=dict)
     content_hash: str = ""
+    source_path: str | None = None

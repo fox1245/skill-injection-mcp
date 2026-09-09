@@ -21,7 +21,7 @@ def verdict(s=None, assessment="supported", unmet=None):
     s = s or skill()
     return {
         "skill_id": s.skill_id, "assessment": assessment, "reason": "Source supports this requirement.",
-        "evidence": [{"field": "description", "quote": s.description}],
+        "evidence": [{"source_id": "c0:description"}],
         "unmet_requirements": unmet or [],
     }
 
@@ -47,9 +47,10 @@ def test_cross_language_support_uses_original_and_source_quotes():
     assert assessment.citations[0]["quote"] == DESCRIPTION
     data = json.loads(seen[0]["messages"][1]["content"])
     assert data["original_requirement"] == KOREAN
-    assert data["candidates"][0]["body"] == skill().body
+    assert data["candidates"][0]["sources"][1]["text"] == skill().body
     assert seen[0]["response_format"]["type"] == "json_schema"
     assert seen[0]["provider"]["require_parameters"]
+    assert "c0:description" in seen[0]["response_format"]["json_schema"]["schema"]["$defs"]["SourceReference"]["properties"]["source_id"]["enum"]
 
 
 @pytest.mark.parametrize("assessment", ["partial", "unsupported", "unknown"])
@@ -71,7 +72,7 @@ def test_invalid_verdicts_fail_closed(defect):
     v = verdict()
     results = [v]
     if defect == "fabricated_quote":
-        v["evidence"][0]["quote"] = "Invented support for Kubernetes"
+        v["evidence"][0]["source_id"] = "invented-source"
     elif defect == "wrong_field":
         v["evidence"][0]["field"] = "body"
     elif defect == "missing_candidate":
@@ -138,7 +139,7 @@ def test_cache_keys_include_original_requirement_source_and_model():
         seen.append(body)
         return response([{
             **verdict(), "skill_id": s["skill_id"],
-            "evidence": [{"field": "description", "quote": s["description"]}],
+            "evidence": [{"source_id": s["sources"][0]["source_id"]}],
         }])
     verifier = SemanticVerifier()
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
@@ -163,7 +164,7 @@ def test_engine_semantic_path_has_no_lexical_gate(engine, monkeypatch):
             "skill_id": s["skill_id"],
             "assessment": "supported" if s["skill_id"] == "package-installer" else "unsupported",
             "reason": "Mock cross-language semantic judgement",
-            "evidence": [{"field": "description", "quote": s["description"]}],
+            "evidence": [{"source_id": s["sources"][0]["source_id"]}],
             "unmet_requirements": [] if s["skill_id"] == "package-installer" else ["Unsupported task"],
         } for s in data["candidates"]])
     monkeypatch.setattr("skill_inject_mcp.engine.evaluate_candidate",
@@ -212,3 +213,12 @@ def test_default_does_not_enable_remote_verification_from_api_key_alone():
     from skill_inject_mcp.config import Settings
     settings = Settings(_env_file=None, OPENROUTER_API_KEY="test")
     assert settings.verification_mode == "lexical"
+
+
+def test_source_fragments_preserve_complete_original_text():
+    from skill_inject_mcp.retrieve.semantic import source_fragments
+    s = skill().model_copy(update={"body": "First paragraph.\n" + "x" * 4000 + "\nDoes not support network access."})
+    fragments = source_fragments(s, chunk_chars=120)
+    body = "".join(f["text"] for f in fragments.values() if f["field"] == "body")
+    assert body == s.body
+    assert all(len(f["text"]) <= 120 for key, f in fragments.items() if key.startswith("body:"))

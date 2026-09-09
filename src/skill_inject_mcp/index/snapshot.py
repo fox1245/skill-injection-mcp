@@ -13,6 +13,7 @@ import numpy as np
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.embed.embedder import Embedder, build_embedder
 from skill_inject_mcp.index.sparse import SparseIndex
+from skill_inject_mcp.index.cache import EmbeddingCache
 from skill_inject_mcp.index.vector import VectorIndex, build_vector_index
 from skill_inject_mcp.registry.scan import SkillRegistry
 
@@ -81,7 +82,7 @@ def build_snapshot(
     identity = embedding_identity(settings)
     if previous is not None and previous.identity == identity:
         embedder, degraded = previous.embedder, previous.embedder_degraded
-        cached = previous.vectors
+        cached = dict(previous.vectors)
     else:
         embedder, degraded = build_embedder(
             api_key=settings.resolve_api_key(), use_fake=settings.use_fake_embedder,
@@ -95,13 +96,18 @@ def build_snapshot(
         for s in skills
     }
     hashes = {sid: hashlib.sha256(text.encode()).hexdigest() for sid, text in documents.items()}
+    disk_cache = EmbeddingCache(Path(settings.index_dir), identity, settings.embedding_dim) if settings.persistent_embedding_cache else None
     pending = {}
     vectors = {}
     for sid, digest in hashes.items():
         if digest in cached:
             vectors[digest] = cached[digest]
         else:
-            pending[digest] = documents[sid]
+            stored = disk_cache.get(digest) if disk_cache else None
+            if stored is not None:
+                vectors[digest] = stored
+            else:
+                pending[digest] = documents[sid]
     # Complete remote work before creating or touching any live index files.
     items = list(pending.items())
     for offset in range(0, len(items), settings.embedding_batch_size):
@@ -114,6 +120,8 @@ def build_snapshot(
             if array.shape != (settings.embedding_dim,) or not np.isfinite(array).all():
                 raise ValueError("Embedding response has invalid shape or non-finite values")
             vectors[digest] = array.copy()
+            if disk_cache is not None:
+                disk_cache.put(digest, vectors[digest])
 
     index_root = Path(settings.index_dir).resolve()
     index_root.mkdir(parents=True, exist_ok=True)

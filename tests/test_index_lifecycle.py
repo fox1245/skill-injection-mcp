@@ -184,3 +184,38 @@ def test_embedding_batches_are_bounded(harness):
     engine.settings.embedding_batch_size = 1
     engine.reindex()
     assert [len(batch) for batch in calls] == [1, 1]
+
+
+def test_persistent_cache_survives_engine_restart(harness, monkeypatch):
+    engine, root, calls = harness
+    engine.settings.persistent_embedding_cache = True
+    settings = engine.settings.model_copy()
+    engine.resolve(req())
+    engine.close()
+    restarted = SkillInjectEngine(settings)
+    try:
+        result = restarted.resolve(req())
+        assert result.match_status == "complete"
+        assert [len(batch) for batch in calls] == [2]
+    finally:
+        restarted.close()
+
+
+def test_corrupt_persistent_vector_is_recomputed(harness):
+    engine, root, calls = harness
+    engine.settings.persistent_embedding_cache = True
+    settings = engine.settings.model_copy()
+    engine.resolve(req())
+    engine.close()
+    import sqlite3
+    from contextlib import closing
+    with closing(sqlite3.connect(Path(settings.index_dir) / "embedding-cache.sqlite")) as connection:
+        connection.execute("UPDATE embeddings SET vector=? WHERE doc_hash=(SELECT doc_hash FROM embeddings LIMIT 1)",
+                           (b"invalid cached vector",))
+        connection.commit()
+    restarted = SkillInjectEngine(settings)
+    try:
+        restarted.resolve(req())
+        assert [len(batch) for batch in calls] == [2, 1]
+    finally:
+        restarted.close()

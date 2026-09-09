@@ -30,7 +30,8 @@ cp .env.example .env
   with each candidate's complete description and body, including non-goals. It checks
   meaning and constraints rather than shared words or embedding thresholds.
 - **Source-grounded results**: supported / partial / unsupported / unknown verdicts
-  include exact source quotes. IDs, quotes and verdict consistency are checked locally.
+  cite permitted, candidate-specific source IDs. The server extracts exact original text;
+  source ownership, IDs and verdict consistency are checked locally.
   Invalid responses and service errors remain unknown; they never fall through to lexical acceptance.
 - **Offline fallback**: lexical mode retains conservative textual matching, explicitly
   labelled as lexical. An API key alone does not enable remote semantic verification.
@@ -198,10 +199,57 @@ Both of these work on Windows and Linux after `pip install -e .`:
   requires cosine >=0.45 and a >=0.05 margin, or >=0.55 with no retrieved competitor.
 - With two RRF channels and k=60, the maximum fused score is 2/61 (about 0.03279).
   Setting constraints.min_score above that excludes every candidate.
-- Snapshot/vector reuse is currently process-local. A server restart rebuilds the index.
+- Live index snapshots are process-local. Set SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true
+  to reuse unchanged document embeddings across server restarts. The content-addressed
+  SQLite cache includes model identity and validates vector shape/finiteness.
   Managed generations are cleaned up on replacement and normal server shutdown;
   an abruptly terminated process may leave its generation directory behind.
 - Refresh failures are returned to the caller. The last successful snapshot remains
   available for indexed body reads, but a failed refresh is not presented as current.
 - Pytest blocks real HTTP. The separate opt-in live evaluation checks model behaviour;
   a small fixture evaluation is not a general multilingual quality guarantee.
+
+## Codex global integration
+
+Codex's own skills/list API can provide the exact enabled global catalog, including
+system and plugin skills. skill_inject_mcp.codex_adapter.sync_catalog writes that
+catalog as a manifest of names and original SKILL.md paths. It does not start a task.
+
+Set SKILL_INJECT_SKILL_MANIFEST to that manifest path to index it instead of
+fixtures/skills. Explicit constraints.skills_dir still overrides the manifest.
+get_skill_body returns source_path so relative resources can be loaded from the
+original skill folder. Catalog refresh happens when the installed launcher starts.
+
+Recommended settings for a large installed catalog:
+
+```dotenv
+SKILL_INJECT_VERIFICATION_MODE=semantic
+SKILL_INJECT_VERIFICATION_TOP_K=5
+SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS=100000
+SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true
+SKILL_INJECT_EMBEDDING_BATCH_SIZE=32
+```
+
+The optional codex_prompt_hook tool returns a UserPromptSubmit additionalContext
+object containing up to three UNVERIFIED candidates. It never blocks the prompt,
+skips simple acknowledgements, and leaves structured requirements and binding to
+resolve_skills. Hook errors are advisory.
+
+Configure a native MCP hook in Codex versions supporting mcp_tool handlers:
+
+```json
+{
+  "type": "mcp_tool",
+  "server": "skill-injection",
+  "tool": "codex_prompt_hook",
+  "input": {"prompt": "${prompt}"},
+  "timeout": 120,
+  "statusMessage": "Finding installed skill candidates"
+}
+```
+
+Add it under UserPromptSubmit in hooks.json while preserving existing hooks.
+Codex requires review/trust of the exact new definition. Initial indexing transmits
+installed SKILL.md documents to the configured embedding provider; semantic mode
+also transmits original requirements and candidate sources. Enable this only for
+the catalogs and data the user has authorized.

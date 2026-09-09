@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from skill_inject_mcp.retrieve.checks import MatchAssessment
 from skill_inject_mcp.schemas import SkillMeta
 
-PROMPT_VERSION = "semantic-v1"
+PROMPT_VERSION = "semantic-v3-enumerated-sources"
 SYSTEM_PROMPT = """You verify whether Agent Skills support a user's ORIGINAL requirement.
 The requirement and skill documents can be in DIFFERENT languages. Judge meaning, not
 shared words, spelling, query similarity, or retrieval scores. Do not translate the
@@ -32,8 +32,10 @@ Return exactly one result per candidate:
 - unknown: insufficient evidence to decide. Never infer support merely from silence.
 
 Give a concise reason and list unmet_requirements in the user's language when practical.
-Cite short, EXACT, contiguous quotes from the candidate's description or body, in the
-source language, preserving punctuation and Markdown. Do not invent or translate quotes.
+Candidate sources are complete, ordered fragments with stable source_id values.
+Cite the source_id of the fragments that support your verdict. The server will extract
+the original text; do not copy, paraphrase, translate or invent quotes or source IDs.
+Cite only IDs belonging to that candidate. Headings and exclusions apply to subsequent fragments until the next relevant heading.
 A supported result must have source evidence and an empty unmet_requirements list.
 A partial result must include source evidence and a nonempty unmet_requirements list.
 Do not treat a non-goal or negated capability as positive evidence.
@@ -45,16 +47,33 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
-class SourceQuote(StrictModel):
-    field: Literal["description", "body"]
-    quote: str = Field(min_length=1)
+class SourceReference(StrictModel):
+    source_id: str = Field(min_length=1)
+
+
+def source_fragments(skill: SkillMeta, chunk_chars: int = 1600) -> dict[str, dict[str, str]]:
+    fragments = {}
+    if skill.description:
+        fragments["description"] = {"field": "description", "text": skill.description}
+    start = 0
+    index = 0
+    while start < len(skill.body):
+        end = min(start + chunk_chars, len(skill.body))
+        if end < len(skill.body):
+            newline = skill.body.rfind("\n", start, end)
+            if newline >= start:
+                end = newline + 1
+        fragments[f"body:{index}"] = {"field": "body", "text": skill.body[start:end]}
+        start = end
+        index += 1
+    return fragments
 
 
 class CandidateVerdict(StrictModel):
     skill_id: str
     assessment: Literal["supported", "partial", "unsupported", "unknown"]
     reason: str = Field(min_length=1)
-    evidence: list[SourceQuote]
+    evidence: list[SourceReference]
     unmet_requirements: list[str]
 
 
@@ -96,6 +115,7 @@ class SemanticVerifier:
         results = {}
         pending = []
         keys = {}
+        source_lookup = {}
         degraded = False
         for skill in candidates:
             source = {"skill_id": skill.skill_id, "description": skill.description, "body": skill.body}
@@ -111,10 +131,23 @@ class SemanticVerifier:
                 results[skill.skill_id] = self._cache[key]
                 self._cache.move_to_end(key)
             else:
-                pending.append(source)
+                prefix = f"c{len(pending)}:"
+                fragments = {prefix + key: value for key, value in source_fragments(skill).items()}
+                source_lookup[skill.skill_id] = fragments
+                pending.append({
+                    "skill_id": skill.skill_id,
+                    "sources": [{"source_id": sid, **fragment} for sid, fragment in fragments.items()],
+                })
         if not pending:
             return VerificationBatch(results, degraded, "source_limit_exceeded" if degraded else None)
 
+        schema = VerdictResponse.model_json_schema()
+        schema["$defs"]["SourceReference"]["properties"]["source_id"]["enum"] = [
+            source["source_id"] for candidate in pending for source in candidate["sources"]
+        ]
+        schema["$defs"]["CandidateVerdict"]["properties"]["skill_id"]["enum"] = [
+            candidate["skill_id"] for candidate in pending
+        ]
         payload = {
             "model": model,
             "messages": [
@@ -127,7 +160,7 @@ class SemanticVerifier:
             "max_tokens": 4096,
             "response_format": {"type": "json_schema", "json_schema": {
                 "name": "skill_capability_verification", "strict": True,
-                "schema": VerdictResponse.model_json_schema(),
+                "schema": schema,
             }},
             "provider": {"order": ["Cerebras", "Groq"], "allow_fallbacks": True, "require_parameters": True},
         }
@@ -154,10 +187,15 @@ class SemanticVerifier:
                 raise ValueError("Missing, duplicate or unknown candidate ids")
             validated = {}
             for verdict in parsed.results:
-                source = expected[verdict.skill_id]
+                source = source_lookup[verdict.skill_id]
+                citations = []
                 for citation in verdict.evidence:
-                    if not citation.quote.strip() or citation.quote not in source[citation.field]:
-                        raise ValueError("Evidence quote is absent from the cited source")
+                    if citation.source_id not in source:
+                        raise ValueError("Evidence reference is absent from the cited source")
+                    fragment = source[citation.source_id]
+                    if not fragment["text"].strip():
+                        raise ValueError("Evidence source is empty")
+                    citations.append({"field": fragment["field"], "quote": fragment["text"]})
                 if verdict.assessment != "unknown" and not verdict.evidence:
                     raise ValueError("Non-unknown verdict requires source evidence")
                 if verdict.assessment == "supported" and verdict.unmet_requirements:
@@ -167,8 +205,8 @@ class SemanticVerifier:
                 validated[verdict.skill_id] = MatchAssessment(
                     matched=verdict.assessment == "supported", reason=verdict.reason,
                     lexical_overlap=0.0, assessment=verdict.assessment,
-                    evidence=[q.quote for q in verdict.evidence],
-                    citations=[q.model_dump() for q in verdict.evidence],
+                    evidence=[q["quote"] for q in citations],
+                    citations=citations,
                     unmet_requirements=verdict.unmet_requirements, verifier="semantic",
                 )
             # Publish/cache only after the entire batch passes structural and source validation.

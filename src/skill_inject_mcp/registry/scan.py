@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,7 @@ def scan_skills(skills_dir: Path) -> list[SkillMeta]:
             path=skill_md.relative_to(skills_dir).as_posix(),
             depends_on=[str(d) for d in deps], tags=[str(t) for t in tags],
             frontmatter=fm, content_hash=hashlib.sha256(raw).hexdigest(),
+            source_path=str(skill_md.resolve()),
         ))
     return results
 
@@ -82,7 +84,24 @@ class SkillRegistry:
         self.duplicate_ids: set[str] = set()
 
     def load(self, skills_dir: Path) -> list[SkillMeta]:
-        skills = scan_skills(skills_dir)
+        return self._assign(scan_skills(skills_dir))
+
+    def load_manifest(self, manifest: Path) -> list[SkillMeta]:
+        entries = json.loads(Path(manifest).read_text(encoding="utf-8-sig"))["skills"]
+        skills = []
+        for entry in entries:
+            if not entry.get("enabled", True):
+                continue
+            path = Path(entry["path"]).resolve()
+            if path.name != "SKILL.md" or not path.is_file():
+                raise ValueError(f"Invalid installed skill path: {path}")
+            original = next(s for s in scan_skills(path.parent) if Path(s.source_path) == path)
+            skills.append(original.model_copy(update={
+                "skill_id": entry["name"], "source_path": str(path),
+            }))
+        return self._assign(skills)
+
+    def _assign(self, skills: list[SkillMeta]) -> list[SkillMeta]:
         self.validation_errors = validate_skill_graph(skills)
         self.skills = {}
         self.duplicate_ids = set()

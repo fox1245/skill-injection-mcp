@@ -1,0 +1,15 @@
+﻿.skill_inject_index/
+.pytest_tmp/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+*.npz
+*.sqlite
+.DS_Store

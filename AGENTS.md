@@ -13,6 +13,138 @@ Python 3.11+, Windows and Linux. Install with `pip install -e ".[dev]"`.
 Start with `skill-inject-mcp` or `python -m skill_inject_mcp`.
 Registry paths are POSIX-relative to the selected skills root.
 
+## Installation means Codex registration, not just pip install
+
+When the user asks to install, bootstrap, register, or configure this project for
+Codex, complete the MCP registration, global usage guidance, and prompt-hook setup
+as part of that task. Act on already-authorized work; do not stop after installing
+Python dependencies or merely suggest that the user register the server later.
+
+This instruction is scoped to installation/integration work. Ordinary code reviews,
+unit tests, CI runs, and unrelated edits must not silently rewrite global Codex
+configuration. Do not require the not-yet-registered MCP to plan its own bootstrap.
+
+### Registration workflow
+
+1. **Inspect and preserve.** Resolve the actual repository path, user Codex home,
+   Python interpreter, Codex desktop/CLI executable, and existing MCP/hooks config.
+   Back up config.toml, hooks.json and global AGENTS.md before changing them.
+   Preserve other MCP servers, hooks, style instructions and existing user choices.
+   On Windows, a restricted process can resolve a different account's home; verify
+   registration in the intended user's Codex host, not an empty sandbox profile.
+
+2. **Install a working runtime.** Verify the interpreter and imports. Use a dedicated
+   virtual environment with an editable installation of this repository. Use
+   absolute executable/launcher paths and the repository as the MCP cwd so its
+   .env can be loaded. Do not assume a copied .venv or the first python on PATH works.
+
+3. **Use the real enabled catalog.** Call Codex's skills/list API and export enabled
+   user/system/plugin entries with codex_adapter.sync_catalog. Retain the exact
+   namespaced names and original SKILL.md paths. Configure SKILL_INJECT_SKILL_MANIFEST;
+   fixtures/skills is for tests, never evidence of a successful global installation.
+   Create/reuse a small launcher that refreshes the catalog before calling
+   skill_inject_mcp.server.main. On refresh failure, identify any last-known catalog
+   explicitly; do not silently substitute fixture skills.
+
+4. **Upsert the MCP server.** Register the name skill-injection using Codex's MCP CLI
+   or supported config API. Update an existing entry instead of creating duplicates.
+   Set command/args/cwd and the environment listed below. Do not copy API keys into
+   config.toml, hooks.json, AGENTS.md, logs, or git. Reuse the authorized .env/key source.
+
+5. **Upsert global AGENTS.md guidance.** Use a uniquely marked managed section,
+   preserving all other content. Direct agents to resolve atomic requirements before
+   committing to substantive workflows; preserve user constraints; inspect assessment,
+   citations and unmet requirements; read selected bodies with registry_snapshot;
+   resolve resources from source_path. Explain that hook candidates are unverified
+   and complete does not certify execution success. Do not force irrelevant skills
+   or block all work just because no suitable skill exists.
+
+6. **Upsert the UserPromptSubmit hook.** Use the native mcp_tool handler below when
+   the installed Codex supports it. Inspect its schema/capabilities; 0.153.4 is a
+   verified compatible version. Preserve existing matcher groups and avoid adding
+   the same server/tool handler twice. The hook is advisory and must never turn
+   discovery results into an execution approval or a forced binding.
+
+7. **Complete the trust step correctly.** Codex must trust the exact hook definition.
+   Review the concrete event, tool, input and timeout through the supported hook
+   review/trust flow. Respect existing authorization and disabled states. If further
+   user approval is required, prepare the complete registration first and ask only
+   for the specific remaining trust/data-transmission decision. Never bypass hook
+   trust or fabricate trust records. Changing a timeout can change the hook hash,
+   so re-check the resulting trust status.
+
+8. **Verify the registered setup.** Run codex mcp get skill-injection in the intended
+   host; connect with the exact registered command/environment; list all four tools;
+   test resolve_skills, get_skill_body and codex_prompt_hook. Check actual installed
+   catalog counts, namespaces, source paths and errors. Use representative installed
+   skills, including long and plugin-provided skills, rather than only fixtures.
+   Report API failures/unknown results honestly and keep automated tests offline.
+
+9. **Verify preservation and report state.** Confirm existing MCP behavior and hooks
+   are preserved and repeat setup does not duplicate entries. Report configured,
+   connected and trusted states separately. If the running app needs a reload,
+   say so; do not claim that this task's already-loaded tool list has refreshed.
+
+### Registered server defaults
+
+Use machine-specific absolute paths instead of copying another user's paths:
+
+```toml
+[mcp_servers.skill-injection]
+command = "<absolute-path-to-venv-python>"
+args = ["-B", "-u", "<absolute-path-to-catalog-refresh-launcher>"]
+cwd = "<absolute-path-to-this-repository>"
+startup_timeout_sec = 60
+tool_timeout_sec = 900
+
+[mcp_servers.skill-injection.env]
+PYTHONUTF8 = "1"
+PYTHONUNBUFFERED = "1"
+SKILL_INJECT_SKILL_MANIFEST = "<absolute-path-to-catalog.json>"
+SKILL_INJECT_INDEX_DIR = "<absolute-path-to-local-index-cache>"
+SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE = "true"
+SKILL_INJECT_EMBEDDING_BATCH_SIZE = "32"
+SKILL_INJECT_EMBEDDING_TIMEOUT_S = "180"
+SKILL_INJECT_MULTI_QUERY_TIMEOUT_S = "30"
+SKILL_INJECT_VERIFICATION_TIMEOUT_S = "120"
+SKILL_INJECT_VERIFICATION_TOP_K = "5"
+SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS = "100000"
+```
+
+Enable SKILL_INJECT_VERIFICATION_MODE=semantic only within the user's authorized
+scope. Initial indexing sends installed SKILL.md content to the embedding provider;
+semantic verification sends original requirements and candidate sources to the chat
+provider. Reuse existing consent for the same scope; do not assume unrelated
+catalogs or data are authorized.
+
+Add/update this handler under UserPromptSubmit in hooks.json:
+
+```json
+{
+  "type": "mcp_tool",
+  "server": "skill-injection",
+  "tool": "codex_prompt_hook",
+  "input": {"prompt": "${prompt}"},
+  "timeout": 240,
+  "statusMessage": "Finding installed skill candidates"
+}
+```
+
+### Timeout policy
+
+The HTTP read budgets are configurable: embeddings 180 seconds, query expansion
+30 seconds, semantic verification 120 seconds. Connection and pool waits remain
+10 seconds; writes have a 30-second budget. Injected/test HTTP clients must receive
+the same per-request timeout, rather than silently keeping their own defaults.
+
+Codex's tool timeout is an outer deadline (recommended 900 seconds); the advisory
+prompt hook has a 240-second outer deadline. These are not guarantees that an
+arbitrary multi-requirement request will finish: each requirement can make several
+HTTP calls. Split large plans into bounded batches when necessary. Keep failure
+and unknown semantics intact; increasing a timeout is not permission to accept an
+unverified result. Restart the server after environment timeout changes.
+
+
 ## resolve_skills
 
 Pass a typed `SkillInjectRequest` in the MCP argument named `request`:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -7,8 +7,10 @@ from typing import Sequence
 
 import httpx
 
+from skill_inject_mcp.timeouts import MULTI_QUERY_READ_TIMEOUT_S, http_timeout
+
 DEFAULT_MULTI_QUERY_MODEL = "openai/gpt-oss-120b"
-DEFAULT_TIMEOUT_S = 12.0
+DEFAULT_TIMEOUT_S = MULTI_QUERY_READ_TIMEOUT_S
 # Prefer fast inference hosts when the model is available there (OpenRouter provider routing).
 DEFAULT_PROVIDER_ORDER = ["Cerebras", "Groq"]
 
@@ -136,11 +138,12 @@ def expand_queries(
     http = client
     try:
         if http is None:
-            http = httpx.Client(timeout=timeout_s)
+            http = httpx.Client(timeout=http_timeout(timeout_s))
         resp = http.post(
             f"{base_url.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
+            timeout=http_timeout(timeout_s),
         )
         resp.raise_for_status()
         body = resp.json()

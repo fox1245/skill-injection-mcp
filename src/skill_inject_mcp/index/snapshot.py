@@ -87,7 +87,7 @@ def build_snapshot(
         embedder, degraded = build_embedder(
             api_key=settings.resolve_api_key(), use_fake=settings.use_fake_embedder,
             model=settings.embedding_model, dim=settings.embedding_dim,
-            base_url=settings.embedding_base_url,
+            base_url=settings.embedding_base_url, timeout_s=settings.embedding_timeout_s,
         )
         cached = {}
     skills = registry.all()

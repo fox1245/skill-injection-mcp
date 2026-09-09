@@ -1,10 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from skill_inject_mcp.timeouts import (
+    EMBEDDING_READ_TIMEOUT_S, MULTI_QUERY_READ_TIMEOUT_S, VERIFICATION_READ_TIMEOUT_S,
+)
 
 
 class Settings(BaseSettings):
@@ -28,6 +32,7 @@ class Settings(BaseSettings):
     embedding_model: str = "qwen/qwen3-embedding-8b"
     embedding_dim: int = Field(default=1024, ge=1)
     embedding_batch_size: int = Field(default=32, ge=1)
+    embedding_timeout_s: float = Field(default=EMBEDDING_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
     persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
@@ -39,12 +44,12 @@ class Settings(BaseSettings):
     # Multi-query expansion (OpenRouter chat). Effective only when API key present.
     multi_query: bool = True
     multi_query_model: str = "openai/gpt-oss-120b"
-    multi_query_timeout_s: float = 12.0
+    multi_query_timeout_s: float = Field(default=MULTI_QUERY_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
 
     verification_mode: Literal["semantic", "lexical"] = "lexical"
     verification_model: str = "openai/gpt-oss-120b"
     verification_top_k: int = Field(default=5, ge=1, le=20)
-    verification_timeout_s: float = Field(default=45.0, gt=0)
+    verification_timeout_s: float = Field(default=VERIFICATION_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
     verification_max_source_chars: int = Field(default=16000, ge=1)
     verification_cache_size: int = Field(default=256, ge=0)
 

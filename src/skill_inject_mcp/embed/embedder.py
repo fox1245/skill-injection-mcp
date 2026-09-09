@@ -9,6 +9,7 @@ import httpx
 import numpy as np
 
 from skill_inject_mcp.text import words
+from skill_inject_mcp.timeouts import EMBEDDING_READ_TIMEOUT_S, http_timeout
 
 
 def format_query(query: str, *, task: str = "Given a skill requirement, retrieve matching agent skills") -> str:
@@ -121,11 +122,13 @@ class OpenRouterEmbedder(Embedder):
         model: str = "qwen/qwen3-embedding-8b",
         dim: int = 1024,
         base_url: str = "https://openrouter.ai/api/v1",
+        timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.dim = dim
         self.base_url = base_url.rstrip("/")
+        self.timeout_s = timeout_s
 
     def _call(self, texts: Sequence[str]) -> list[np.ndarray]:
         payload = {
@@ -137,10 +140,16 @@ class OpenRouterEmbedder(Embedder):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        with httpx.Client(timeout=60.0) as client:
-            resp = client.post(f"{self.base_url}/embeddings", json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()["data"]
+        try:
+            with httpx.Client(timeout=http_timeout(self.timeout_s)) as client:
+                resp = client.post(f"{self.base_url}/embeddings", json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()["data"]
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Embedding request timed out ({type(exc).__name__}; read_timeout_s={self.timeout_s:g}). "
+                "Check provider availability or SKILL_INJECT_EMBEDDING_TIMEOUT_S."
+            ) from exc
         out: list[np.ndarray] = []
         for item in sorted(data, key=lambda x: x["index"]):
             arr = np.asarray(item["embedding"], dtype=np.float64)
@@ -174,8 +183,9 @@ def build_embedder(
     model: str = "qwen/qwen3-embedding-8b",
     dim: int = 1024,
     base_url: str = "https://openrouter.ai/api/v1",
+    timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
 ) -> tuple[Embedder, bool]:
     """Return (embedder, degraded). degraded=True when falling back to FakeEmbedder."""
     if use_fake or not api_key:
         return FakeEmbedder(dim=dim), bool(not use_fake and not api_key)
-    return OpenRouterEmbedder(api_key=api_key, model=model, dim=dim, base_url=base_url), False
+    return OpenRouterEmbedder(api_key=api_key, model=model, dim=dim, base_url=base_url, timeout_s=timeout_s), False

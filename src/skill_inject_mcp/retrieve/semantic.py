@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from skill_inject_mcp.retrieve.checks import MatchAssessment
 from skill_inject_mcp.schemas import SkillMeta
+from skill_inject_mcp.timeouts import VERIFICATION_READ_TIMEOUT_S, http_timeout
 
 PROMPT_VERSION = "semantic-v3-enumerated-sources"
 SYSTEM_PROMPT = """You verify whether Agent Skills support a user's ORIGINAL requirement.
@@ -102,7 +103,7 @@ class SemanticVerifier:
     def verify(
         self, requirement: str, candidates: list[SkillMeta], *,
         api_key: str | None, model: str = "openai/gpt-oss-120b",
-        base_url: str = "https://openrouter.ai/api/v1", timeout_s: float = 45.0,
+        base_url: str = "https://openrouter.ai/api/v1", timeout_s: float = VERIFICATION_READ_TIMEOUT_S,
         max_source_chars: int = 16000, client: httpx.Client | None = None,
     ) -> VerificationBatch:
         if not candidates:
@@ -168,11 +169,11 @@ class SemanticVerifier:
         http = client
         try:
             if http is None:
-                http = httpx.Client(timeout=timeout_s)
+                http = httpx.Client(timeout=http_timeout(timeout_s))
             response = http.post(
                 f"{base_url.rstrip('/')}/chat/completions", json=payload,
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                timeout=timeout_s,
+                timeout=http_timeout(timeout_s),
             )
             response.raise_for_status()
             message = response.json()["choices"][0]

@@ -243,7 +243,7 @@ Configure a native MCP hook in Codex versions supporting mcp_tool handlers:
   "server": "skill-injection",
   "tool": "codex_prompt_hook",
   "input": {"prompt": "${prompt}"},
-  "timeout": 120,
+  "timeout": 240,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
@@ -253,3 +253,30 @@ Codex requires review/trust of the exact new definition. Initial indexing transm
 installed SKILL.md documents to the configured embedding provider; semantic mode
 also transmits original requirements and candidate sources. Enable this only for
 the catalogs and data the user has authorized.
+
+## HTTP and Codex deadlines
+
+HTTP response-read budgets are configurable:
+
+| Setting | Default |
+|---|---:|
+| SKILL_INJECT_EMBEDDING_TIMEOUT_S | 180 seconds |
+| SKILL_INJECT_MULTI_QUERY_TIMEOUT_S | 30 seconds |
+| SKILL_INJECT_VERIFICATION_TIMEOUT_S | 120 seconds |
+
+Connection/pool waits remain 10 seconds and request writes have a 30-second budget.
+Timeouts also apply when a caller supplies an HTTP client. Embedding timeout errors
+identify the timeout type and configured read budget without including credentials.
+
+For Codex registration, use startup_timeout_sec=60, tool_timeout_sec=900 and a
+240-second UserPromptSubmit hook timeout. The HTTP values are per-I/O budgets;
+the Codex values are outer deadlines. Large plans can require multiple requests
+per requirement, so split large plans into smaller batches rather than treating
+these defaults as an unlimited end-to-end allowance. Restart MCP processes after
+changing environment settings.
+
+See AGENTS.md for the automatic installation/registration workflow. Installation
+includes preserving existing config, exporting the actual global catalog, upserting
+MCP and hook entries, updating global guidance, checking exact hook trust, and
+verifying the registered connection. Ordinary code review and CI do not trigger
+global configuration changes.

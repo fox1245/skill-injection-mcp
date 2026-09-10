@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from skill_inject_mcp.schemas import SkillMeta, ValidationErrorItem
+from skill_inject_mcp.registry.layer import classify_skill_layer
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -47,6 +48,7 @@ def scan_skills(skills_dir: Path) -> list[SkillMeta]:
             frontmatter=fm, content_hash=hashlib.sha256(raw).hexdigest(),
             source_path=str(skill_md.resolve()),
         ))
+        results[-1] = results[-1].model_copy(update={"layer": classify_skill_layer(results[-1])})
     return results
 
 

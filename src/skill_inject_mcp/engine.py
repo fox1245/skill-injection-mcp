@@ -13,6 +13,7 @@ from skill_inject_mcp.config import Settings, get_settings
 from skill_inject_mcp.embed.embedder import build_embedder
 from skill_inject_mcp.index.snapshot import build_snapshot, embedding_identity, fingerprint
 from skill_inject_mcp.registry.scan import SkillRegistry
+from skill_inject_mcp.registry.layer import classify_requirement_layer, partition_hits
 from skill_inject_mcp.registry.signature import source_signature
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
@@ -227,6 +228,7 @@ class SkillInjectEngine:
                 "content_hash": skill.content_hash, "registry_snapshot": current,
                 "source_path": skill.source_path,
                 "skills_dir": str(self._snapshot.root),
+                "layer": skill.layer,
             }
 
     def resolve(self, request: SkillInjectRequest) -> SkillInjectResponse:
@@ -262,6 +264,11 @@ class SkillInjectEngine:
         degraded = self.embedder_degraded
         if degraded:
             notes.append("No OPENROUTER_API_KEY; using FakeEmbedder (retriever_degraded)")
+        n_meta = sum(1 for skill in self.registry.all() if skill.layer == "meta")
+        notes.append(
+            f"skill layers: meta={n_meta} domain={len(self.registry.skills) - n_meta}; "
+            "domain requirements search the domain layer first"
+        )
         if rerank != "off":
             degraded = True
             notes.append("rerank=qwen3-0.6b stub: skipped; retriever_degraded=true")
@@ -290,10 +297,14 @@ class SkillInjectEngine:
             all_hits = self.retriever.retrieve(
                 req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
             )
+            wanted = classify_requirement_layer(req.description, req.search_query)
+            primary, secondary = partition_hits(all_hits, self.registry.skills, wanted)
+            search_hits = primary or secondary
+            ranked_hits = primary + secondary
             semantic_assessments = {}
             if mode == "semantic":
                 candidates = [
-                    self.registry.get(hit.skill_id) for hit in all_hits
+                    self.registry.get(hit.skill_id) for hit in search_hits
                     if (min_score is None or hit.ranking_score >= min_score)
                     and self.registry.get(hit.skill_id) is not None
                 ][:self.settings.verification_top_k]
@@ -319,13 +330,13 @@ class SkillInjectEngine:
             first_assessment = None
             first_candidate_id = None
             rejection_reason = None
-            for hit in all_hits:
+            for hit in search_hits:
                 if min_score is not None and hit.ranking_score < min_score:
                     continue
                 skill = self.registry.get(hit.skill_id)
                 if skill is None:
                     continue
-                others = [h for h in all_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
+                others = [h for h in search_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
                 runner_up = max(others, key=lambda h: h.dense_score) if others else None
                 if mode == "semantic":
                     assessment = semantic_assessments.get(skill.skill_id)
@@ -345,13 +356,14 @@ class SkillInjectEngine:
                 accepted, accepted_assessment = hit, assessment
                 bindings[req.id] = closure
                 break
-            for hit in all_hits[:top_k]:
+            for hit in ranked_hits[:top_k]:
                 skill = self.registry.get(hit.skill_id)
                 evidence.append(EvidenceItem(
                     skill_id=hit.skill_id, requirement_id=req.id, ranking_score=hit.ranking_score,
                     dense_rank=hit.dense_rank, sparse_rank=hit.sparse_rank,
                     snippet=skill.description if skill else None,
                     name=skill.name if skill else None, description=skill.description if skill else None,
+                    layer=skill.layer if skill else None,
                 ))
             assessment = accepted_assessment or first_assessment
             checks.append(CheckResult(
@@ -370,6 +382,7 @@ class SkillInjectEngine:
                 citations=assessment.citations if assessment else [],
                 unmet_requirements=assessment.unmet_requirements if assessment else [],
                 verifier=mode,
+                layer=(self.registry.get(accepted.skill_id).layer if accepted and self.registry.get(accepted.skill_id) else None),
             ))
         # Propagate unresolved dependencies even when the dependency was optional.
         by_id = {c.requirement_id: c for c in checks}

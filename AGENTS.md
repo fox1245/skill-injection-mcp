@@ -246,3 +246,11 @@ work and load selected instructions from their original source_path.
 For long installed skills, configure an adequate verification_max_source_chars;
 do not silently truncate exclusions. Candidate source IDs are constrained to known
 values and checked against the corresponding original document.
+
+## Meta-skill layer
+
+Skills-about-skills (authoring, installing, inspecting, maintaining, or cataloguing SKILL.md) are a separate meta layer. Domain work searches the domain layer first.
+
+Classification uses frontmatter layer: meta|domain, tags meta/meta-skill, known meta skill ids, then conservative description heuristics. resolve_skills reports layer on checks and evidence. A meta-skill match is not domain-task coverage.
+
+Before installing or binding an untrusted skill, follow skill-inspector / SkillSpector. APPROVE is not a Skill Epoch.

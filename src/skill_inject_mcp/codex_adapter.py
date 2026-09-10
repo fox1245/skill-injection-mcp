@@ -11,6 +11,7 @@ from pathlib import Path
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import reciprocal_rank_fusion
 from skill_inject_mcp.retrieve.checks import lexical_gate
+from skill_inject_mcp.registry.layer import classify_requirement_layer
 
 
 def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
@@ -133,6 +134,13 @@ async def async_prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
             skill = snapshot.registry.get(skill_id)
             if skill is not None:
                 candidates.append({"skill_id": skill.skill_id, "description": skill.description[:400]})
+        wanted = classify_requirement_layer(stripped)
+        layered = [
+            item for item in candidates
+            if (skill := snapshot.registry.get(item["skill_id"])) is not None and skill.layer == wanted
+        ]
+        if layered:
+            candidates = layered
         # Source files may have changed while the embedding request was in flight.
         catalog = engine.hook_catalog_state(snapshot)
         return _hook_result(candidates, status, catalog, snapshot.snapshot_id)

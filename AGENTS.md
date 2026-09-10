@@ -253,4 +253,6 @@ Skills-about-skills (authoring, installing, inspecting, maintaining, or catalogu
 
 Classification uses frontmatter layer: meta|domain, tags meta/meta-skill, known meta skill ids, then conservative description heuristics. resolve_skills reports layer on checks and evidence. A meta-skill match is not domain-task coverage.
 
+Canonical meta skills include `agentx-codex-conductor`, `skill-inspector`, `skill-creator`, `skill-installer`, `skills-maintain`, and `find-skills`. A conductor/orchestration requirement must resolve in the meta layer, not as a domain skill.
+
 Before installing or binding an untrusted skill, follow skill-inspector / SkillSpector. APPROVE is not a Skill Epoch.

@@ -27,7 +27,8 @@ _KO = (
     "\uc0dd\uc131|\uc791\uc131|\uc720\uc9c0\ubcf4\uc218|\uba54\ud0c0)"
 )
 _REQ_META = re.compile(
-    r"(?is)(?:skill\.md|skil{1,2}\s*injection|meta[- ]?skill|"
+    r"(?is)(?:skill\.md|skil{1,2}[-_\s]*injection|self[-_\s]*directing|"
+    r"agentx-codex-conductor|meta[- ]?skill|"
     r"create(?:\s+or\s+update)?\s+(?:a\s+)?(?:codex\s+)?skill|"
     r"install(?:able)?\s+(?:a\s+)?(?:codex\s+)?skill|"
     r"skill catalog|audit(?:ing)?\s+skills?|"

@@ -5,6 +5,7 @@ from pathlib import Path
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.registry.layer import classify_requirement_layer, classify_skill_layer
+from skill_inject_mcp.registry.layer import KNOWN_META_IDS
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta
 
 
@@ -33,6 +34,10 @@ def test_explicit_frontmatter_and_requirement_layers():
     assert classify_skill_layer(meta) == "meta"
     assert classify_requirement_layer("Create a Codex skill with SKILL.md") == "meta"
     assert classify_requirement_layer("Install Python packages with pip") == "domain"
+    assert "agentx-codex-conductor" in KNOWN_META_IDS
+    assert classify_requirement_layer(
+        "Coordinate Codex use of skill-injection-mcp, self-directing-mcp, and AgentX"
+    ) == "meta"
 
 
 def test_domain_requirement_does_not_bind_meta_skill(tmp_path: Path):
@@ -62,6 +67,32 @@ def test_meta_requirement_binds_meta_skill(tmp_path: Path):
             Requirement(id="author", description="Create a Codex skill with SKILL.md", required=True),
         ]))
         assert resp.checks[0].skill_id == "skill-creator"
+        assert resp.checks[0].layer == "meta"
+    finally:
+        eng.close()
+
+
+def test_conductor_is_meta_and_covers_orchestration(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(
+        skills,
+        "agentx-codex-conductor",
+        "Conduct Codex use of skill-injection-mcp, self-directing-mcp, and AgentX on one delegated production task.",
+        extra="layer: meta\n",
+    )
+    _write_skill(skills, "package-installer", "Install Python packages and project dependencies with pip.")
+    eng = _engine(tmp_path, skills)
+    try:
+        scanned = next(s for s in eng.registry.all() if s.skill_id == "agentx-codex-conductor")
+        assert scanned.layer == "meta"
+        resp = eng.resolve(SkillInjectRequest(requirements=[
+            Requirement(
+                id="conduct",
+                description="Conduct Codex use of skill-injection-mcp, self-directing-mcp, and AgentX on one delegated production task.",
+                required=True,
+            ),
+        ]))
+        assert resp.checks[0].skill_id == "agentx-codex-conductor"
         assert resp.checks[0].layer == "meta"
     finally:
         eng.close()

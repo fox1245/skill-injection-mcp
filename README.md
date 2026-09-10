@@ -343,3 +343,5 @@ includes preserving existing config, exporting the actual global catalog, upsert
 MCP and hook entries, updating global guidance, checking exact hook trust, and
 verifying the registered connection. Ordinary code review and CI do not trigger
 global configuration changes.
+
+SKILL

@@ -1,62 +1,308 @@
-# skill-injection-mcp
+# Skill Injection MCP
 
-Python MCP server that indexes Agent Skills (`SKILL.md`) and resolves task requirements via hybrid retrieval (dense + sparse BM25 fused with RRF).
+AI 에이전트가 여러 개의 `SKILL.md` 파일 중 현재 요청에 가장 적합한 스킬을 찾아주는 MCP 서버입니다.
 
-Cross-platform: Windows and Linux (Python 3.11+).
+단순 키워드 검색뿐 아니라 의미 기반 검색과 검증을 통해 **실제로 해당 작업을 지원하는 스킬인지 근거와 함께 판단**합니다.
 
-## Configuration
+Python으로 작성되었으며 Windows와 Linux에서 실행할 수 있습니다.
 
-Copy `.env.example` to `.env` and fill in values.
+> Python 3.11 이상 필요
 
-PowerShell:
+---
+
+## What is this?
+
+AI 에이전트에게 다음과 같은 요청이 들어왔다고 가정합니다.
+
+> Python에서 BM25 기반 전문 검색을 구현해줘.
+
+이 서버는 등록된 여러 `SKILL.md` 파일을 검색하고, 해당 작업을 지원하는 스킬을 찾아 반환합니다.
+
+검색 결과는 단순히 "비슷해 보이는 스킬"을 반환하는 것이 아니라 다음 정보를 포함합니다.
+
+* 지원 여부
+* 후보 스킬
+* 충족하지 못한 요구사항
+* 근거 문장
+* 스킬 문서 내 인용 위치
+* 의존성
+* 검증 상태
+
+---
+
+# Key Features
+
+## Hybrid Search
+
+두 가지 검색 방식을 함께 사용합니다.
+
+### Lexical Search
+
+요청에 포함된 단어가 실제 스킬 문서에 존재하는지 검색합니다.
+
+### Semantic Search
+
+요청과 스킬 문서를 임베딩하여 의미적으로 유사한 스킬을 찾습니다.
+
+두 검색 결과는 **RRF(Reciprocal Rank Fusion)** 방식으로 결합됩니다.
+
+* 각 검색 채널 상위 20개 후보 사용
+* 동일 점수는 항상 동일한 순서로 정렬
+* 기본 검색 결과 표시 개수: `top_k = 5`
+
+---
+
+## Evidence-Based Verification
+
+후보 스킬은 다음 상태 중 하나로 판정됩니다.
+
+* `supported`
+* `partial`
+* `unsupported`
+* `unknown`
+
+각 판정에는 해당 스킬 문서에서 추출한 근거가 포함됩니다.
+
+또한 서버는 다음을 검증합니다.
+
+* 인용된 문장이 실제 후보 문서에 존재하는지
+* 인용 출처가 올바른 후보인지
+* 판정과 근거가 일관되는지
+
+검증 과정에서 오류가 발생하면 결과를 억지로 통과시키지 않고 `unknown`으로 처리합니다.
+
+---
+
+## Optional Semantic Verification
+
+선택적으로 AI 모델을 사용해 후보 스킬을 검증할 수 있습니다.
+
+기본 모델:
+
+```text
+openai/gpt-oss-120b
+```
+
+검증기는 다음 내용을 함께 비교합니다.
+
+* 원본 요구사항
+* 후보 스킬 설명
+* 후보 스킬 전체 본문
+* 스킬이 지원하지 않는 작업
+* 요청의 제약 조건
+
+단순 키워드 일치나 임베딩 점수만으로 판단하지 않고 **실제 작업과 스킬의 기능이 맞는지 의미적으로 검증**합니다.
+
+한국어 요청에서 영어 스킬을 찾는 등의 교차 언어 매칭도 가능합니다.
+
+---
+
+## Dependency Resolution
+
+스킬 간 의존성을 지원합니다.
+
+예를 들어:
+
+```text
+Skill A
+└── requires Skill B
+    └── requires Skill C
+```
+
+선택된 스킬의 의존성을 끝까지 검증합니다.
+
+결과에는 다음이 포함됩니다.
+
+* 필요한 선행 스킬
+* 해결된 의존성
+* 해결되지 않은 요구사항
+
+`partial`, `unsupported`, `unknown` 상태의 후보는 단독으로 `complete` 결과를 만들 수 없습니다.
+
+---
+
+## Snapshot-Based Registry
+
+검색 결과에는 다음 정보가 포함됩니다.
+
+```text
+registry_snapshot
+```
+
+이 값을 사용하면 검색 당시의 스킬과 현재 읽는 스킬이 동일한지 확인할 수 있습니다.
+
+`get_skill_body` 호출 시 스냅샷을 지정할 수 있으며 문서 해시도 함께 반환합니다.
+
+---
+
+## Incremental Embedding
+
+변경되지 않은 스킬 문서는 다시 임베딩하지 않습니다.
+
+* 변경되지 않은 문서 → 기존 벡터 재사용
+* 변경된 문서 → 새로운 인덱스 생성
+* 인덱싱 실패 → 이전 정상 스냅샷 유지
+* 임베딩 배치 크기 → 기본 `32`
+
+서버를 재시작해도 캐시를 유지하도록 설정할 수도 있습니다.
+
+---
+
+# Architecture
+
+```text
+User Request
+     │
+     ▼
+┌─────────────────┐
+│ Lexical Search  │
+└─────────────────┘
+     │
+     ├──────────────┐
+     │              │
+     ▼              ▼
+┌─────────────────┐
+│ Semantic Search │
+└─────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│       RRF       │
+│ Rank Fusion     │
+└─────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│ Candidate Skills│
+└─────────────────┘
+     │
+     ▼
+┌─────────────────────────┐
+│ Semantic Verification   │
+│        Optional         │
+└─────────────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│ Dependency Check│
+└─────────────────┘
+     │
+     ▼
+┌─────────────────┐
+│ Evidence Result │
+└─────────────────┘
+```
+
+---
+
+# Requirements
+
+* Python 3.11+
+* Windows 또는 Linux
+
+선택 사항:
+
+* OpenRouter API Key
+* 실제 임베딩 모델
+* Semantic Verification
+
+---
+
+# Installation
+
+## Windows
 
 ```powershell
-Copy-Item .env.example .env
+cd path\to\skill-injection-mcp
+
+py -3.12 -m venv .venv
+
+.\.venv\Scripts\python.exe -m pip install -U pip
+
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+
+.\.venv\Scripts\python.exe -m pytest -q
 ```
 
-bash:
+---
+
+## Linux
 
 ```bash
-cp .env.example .env
+cd path/to/skill-injection-mcp
+
+python3.12 -m venv .venv
+
+source .venv/bin/activate
+
+pip install -U pip
+
+pip install -e ".[dev]"
+
+pytest -q
 ```
 
-`.env` is gitignored. Without `OPENROUTER_API_KEY`, dense retrieval uses `FakeEmbedder`.
+---
 
-## Features
+# Environment Configuration
 
-- **Hybrid retrieval**: SQLite FTS5 BM25 and dense cosine, fused by RRF (k=60).
-  Internal retrieval takes the top 20 per query/channel; ties are deterministic.
-- **Cross-language verification (opt-in)**: gpt-oss-120b compares the ORIGINAL requirement
-  with each candidate's complete description and body, including non-goals. It checks
-  meaning and constraints rather than shared words or embedding thresholds.
-- **Source-grounded results**: supported / partial / unsupported / unknown verdicts
-  cite permitted, candidate-specific source IDs. The server extracts exact original text;
-  source ownership, IDs and verdict consistency are checked locally.
-  Invalid responses and service errors remain unknown; they never fall through to lexical acceptance.
-- **Offline fallback**: lexical mode retains conservative textual matching, explicitly
-  labelled as lexical. An API key alone does not enable remote semantic verification.
-- **Unicode text**: sparse retrieval, fake embeddings and evidence tokenization retain
-  Korean and other Unicode words.
-- **Strict MCP contract**: typed input/output schemas, supported schema version only,
-  and errors for unknown fields instead of silently discarding constraints.
-- **Dependencies**: validate request references before indexing; verify selected skill
-  dependencies transitively; include prerequisites in bindings and propagate unresolved needs.
-- **Evidence width**: constraints.top_k (default 5) limits returned evidence only.
-  It does not hide competitors from acceptance or dense-margin checks.
-- **Incremental embeddings**: unchanged document vectors and live snapshots are reused
-  within the server process. Changes rebuild independent index generations; failures
-  preserve the previous generation. Embedding batches default to 32 documents.
-- **Versioned reads**: resolve returns registry_snapshot; get_skill_body can require
-  that snapshot and returns the indexed content hash.
-- **Optional multi-query**: OpenRouter expansion widens retrieval, with original-description
-  fallback and degraded status on failures. Expansion never substitutes for verification.
-- **Embedding backend**: OpenRouter qwen/qwen3-embedding-8b (1024 dimensions), or the
-  deterministic FakeEmbedder for offline development.
-- **Rerank**: qwen3-0.6b remains a stub; requesting it sets retriever_degraded.
+`.env.example` 파일을 `.env`로 복사합니다.
 
-## Tool contract
+```env
+OPENROUTER_API_KEY=your_api_key
+```
 
-The MCP tools/call arguments for resolve_skills include a request object:
+`.env` 파일은 Git에 커밋하지 않습니다.
+
+API Key가 없으면 실제 임베딩 대신 개발용 `FakeEmbedder`가 사용됩니다.
+
+---
+
+# Running the Server
+
+먼저 스킬 폴더 위치를 지정합니다.
+
+## Windows
+
+```powershell
+$env:SKILL_INJECT_SKILLS_DIR = "C:\path\to\skills"
+
+skill-inject-mcp
+```
+
+또는:
+
+```powershell
+python -m skill_inject_mcp
+```
+
+---
+
+## Linux
+
+```bash
+export SKILL_INJECT_SKILLS_DIR=/path/to/skills
+
+skill-inject-mcp
+```
+
+또는:
+
+```bash
+python -m skill_inject_mcp
+```
+
+---
+
+# Usage
+
+메인 MCP 도구는 다음과 같습니다.
+
+```text
+resolve_skills
+```
+
+요청 예시:
 
 ```json
 {
@@ -69,279 +315,312 @@ The MCP tools/call arguments for resolve_skills include a request object:
         "required": true
       }
     ],
-    "constraints": {"top_k": 3}
+    "constraints": {
+      "top_k": 3
+    }
   }
 }
 ```
 
-Requirements can include search_query and depends_on. The draft_plan is optional;
-each step contains id, summary and requirement_ids. Unknown fields are rejected,
-including unsupported task constraints. The constraints object configures retrieval,
-not execution permissions.
+---
 
-Results include match_status, checks, evidence, gaps, validation_errors,
-plan_bindings, retriever_degraded, registry_snapshot, verification_mode and
-verification_degraded. Each check reports its verifier, assessment, candidate_skill_id,
-unmet_requirements, evidence and exact citations (description/body + quote).
-Only supported candidates with resolved dependencies are bound. Partial, unsupported
-and unknown candidates never produce complete on their own.
+## Requirement Options
 
-## Semantic verification (explicit opt-in)
+각 요구사항에는 추가 정보를 포함할 수 있습니다.
 
-Set these in .env to enable cross-language verification:
+```text
+search_query
+depends_on
+```
 
-```dotenv
+또한 선택적으로 `draft_plan`을 제공할 수 있습니다.
+
+```text
+draft_plan
+├── id
+├── summary
+└── requirement_ids
+```
+
+지원하지 않는 필드가 포함되면 조용히 무시하지 않고 오류를 반환합니다.
+
+---
+
+# Response
+
+응답에는 다음 정보가 포함됩니다.
+
+```text
+match_status
+checks
+evidence
+gaps
+validation_errors
+plan_bindings
+retriever_degraded
+registry_snapshot
+verification_mode
+verification_degraded
+```
+
+각 검증 결과에는 다음 정보가 포함됩니다.
+
+* 검증기 종류
+* 판정 결과
+* 후보 스킬 ID
+* 충족하지 못한 요구사항
+* 근거
+* 인용 위치
+
+---
+
+# Semantic Verification
+
+의미 기반 검증을 활성화하려면 명시적으로 설정해야 합니다.
+
+```env
 SKILL_INJECT_VERIFICATION_MODE=semantic
 SKILL_INJECT_VERIFICATION_MODEL=openai/gpt-oss-120b
 ```
 
-This sends each original requirement and the top candidate descriptions/bodies to
-the configured OpenRouter chat endpoint. The default remains lexical; API-key presence
-alone does not opt in. Semantic mode requires a key and returns unknown on failure.
+API Key가 존재한다고 자동으로 Semantic Verification이 활성화되지는 않습니다.
 
-The verifier checks up to SKILL_INJECT_VERIFICATION_TOP_K candidates (default 5),
-independent of constraints.top_k, which controls displayed evidence only.
-Whole candidate sources above SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS (default
-16000 characters) are not sent or silently truncated; those candidates remain unknown.
-Validated verdicts are cached by original requirement, complete source, model, endpoint
-and prompt version (256 entries by default).
+Semantic Verification이 실패하면 결과는 `unknown`으로 처리됩니다.
 
-The verifier reserves 8192 output tokens by default, including reasoning tokens.
-Configure `SKILL_INJECT_VERIFICATION_MAX_TOKENS` to change the initial budget.
-When the provider returns `finish_reason=length`, the partial answer is discarded
-and the exact original request is tried once with twice that budget. Set
-`SKILL_INJECT_VERIFICATION_MAX_RETRIES=0` to disable this recovery (default 1;
-only 0 or 1 is supported). No other error triggers an automatic retry. Sources,
-requirements, provider settings and validation rules remain unchanged on retry.
+---
 
-`verification_diagnostics` reports failed attempts with a stable `code`, requirement
-ID, attempt number, output budget, retry flag and available token usage. For example,
-`response_truncated` distinguishes an exhausted budget from `invalid_source_reference`,
-`candidate_set_mismatch`, malformed JSON, or an HTTP failure. Diagnostics exclude
-credentials, raw provider error bodies, candidate text and reasoning text. A recovered
-attempt can return `verification_degraded=false` while retaining its retry diagnostics;
-an exhausted or otherwise invalid response remains `unknown`. Invalid batch results
-are never cached or accepted, even when their JSON happens to parse.
+## Verification Configuration
 
-The retry can add one HTTP call. With the defaults, the two attempts have output
-limits of 8192 and 16384 tokens; these are limits, not guaranteed usage. The configured
-HTTP read budget applies per attempt, and Codex's tool timeout remains the outer deadline.
-See [OpenRouter reasoning tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)
-and [structured output behavior](https://openrouter.ai/docs/guides/features/structured-outputs).
-
-Translation is not required. Dense retrieval directly embeds the original language;
-BM25 and optional query expansion complement candidate recall. Semantic verification
-does not require any lexical overlap, a fixed cosine threshold or a dense runner-up margin.
-Lexical mode remains available for offline development, but cannot establish cross-language support.
-
-Model judgement is not a proof of execution success. Exact quote validation establishes
-that the cited text exists; it does not prove the model interpreted every condition correctly.
-The verifier explicitly checks the requested deliverable: image-only mockup generation,
-for example, does not establish support for implementing working frontend source code.
-Run the opt-in, fixture-only contrast check with
-`python scripts/evaluate_deliverables.py --live --output work/deliverables.json`.
-It checks code versus images and rewriting versus auditing in both directions;
-four synthetic cases are a regression probe, not a general quality guarantee.
-
-## Live multilingual evaluation
-
-The opt-in evaluation uses only fixtures/skills and synthetic evals/*.json, never
-the configured user's skill directory. It tests 18 positive requirements across
-English, Korean, Japanese, Chinese, Vietnamese and Russian, plus six negative or
-compound requirements. Translation and multi-query are disabled to isolate dense
-retrieval and semantic verification.
-
-```bash
-python scripts/evaluate_multilingual.py --live --output work/multilingual-report.json
-```
-
-The --live flag authorizes fixture transmission and API usage charges for that run.
-Results are written after each case; three consecutive service failures stop the run.
-See evals/README.md for the measured sample and its limits.
-
-## Quick start
-
-### Windows (PowerShell)
-
-```powershell
-cd path\to\skill-injection-mcp
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -U pip
-.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
-.\.venv\Scripts\python.exe -m pytest -q
-```
-
-Run the MCP server (stdio):
-
-```powershell
-$env:SKILL_INJECT_SKILLS_DIR = "C:\path\to\skills"
-.\.venv\Scripts\skill-inject-mcp.exe
-# or:
-.\.venv\Scripts\python.exe -m skill_inject_mcp
-```
-
-Windows tip: if `py` / `python` unexpectedly points at LibreOffice's bundled interpreter, use an explicit CPython install (e.g. `py -3.12`) and put that ahead of LibreOffice on PATH.
-
-### Linux (bash)
-
-```bash
-cd path/to/skill-injection-mcp
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[dev]"
-pytest -q
-```
-
-Run the MCP server (stdio):
-
-```bash
-export SKILL_INJECT_SKILLS_DIR=/path/to/skills
-skill-inject-mcp
-# or:
-python -m skill_inject_mcp
-```
-
-Set `OPENROUTER_API_KEY` for real embeddings (optional). Without it, dense uses `FakeEmbedder` and responses may set `retriever_degraded`.
-
-## Layout
-
-- `src/skill_inject_mcp/` — server, schemas, config, registry, embed, index, retrieve
-- `fixtures/skills/` — sample Agent Skills for tests
-- `tests/` — pytest (no OpenRouter required; uses `FakeEmbedder`)
-- `AGENTS.md` — agent-oriented tool usage and schemas
-
-## Entry points
-
-Both of these work on Windows and Linux after `pip install -e .`:
-
-- Console script: `skill-inject-mcp`
-- Module: `python -m skill_inject_mcp`
-
-## Caveats
-
-- sqlite-vector is optional. When available it stores vectors in SQLite; this implementation
-  computes exact cosine in Python, not native approximate nearest-neighbor search.
-  Otherwise it uses numpy with non-pickle NPZ storage.
-- BM25 scores depend on the corpus. They are ranking evidence, not calibrated probabilities.
-  In lexical fallback mode, sparse support requires a positive score after textual verification. Dense-only support
-  requires cosine >=0.45 and a >=0.05 margin, or >=0.55 with no retrieved competitor.
-- With two RRF channels and k=60, the maximum fused score is 2/61 (about 0.03279).
-  Setting constraints.min_score above that excludes every candidate.
-- Live index snapshots are process-local. Set SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true
-  to reuse unchanged document embeddings across server restarts. The content-addressed
-  SQLite cache includes model identity and validates vector shape/finiteness.
-  Managed generations are cleaned up on replacement and normal server shutdown;
-  an abruptly terminated process may leave its generation directory behind.
-- Refresh failures are returned to the caller. The last successful snapshot remains
-  available for indexed body reads, but a failed refresh is not presented as current.
-- Pytest blocks real HTTP. The separate opt-in live evaluation checks model behaviour;
-  a small fixture evaluation is not a general multilingual quality guarantee.
-
-## Codex global integration
-
-Codex's own skills/list API can provide the exact enabled global catalog, including
-system and plugin skills. skill_inject_mcp.codex_adapter.sync_catalog writes that
-catalog as a manifest of names and original SKILL.md paths. It does not start a task.
-
-Set SKILL_INJECT_SKILL_MANIFEST to that manifest path to index it instead of
-fixtures/skills. Explicit constraints.skills_dir still overrides the manifest.
-get_skill_body returns source_path so relative resources can be loaded from the
-original skill folder. Catalog refresh happens when the installed launcher starts.
-
-Recommended settings for a large installed catalog:
-
-```dotenv
-SKILL_INJECT_VERIFICATION_MODE=semantic
+```env
 SKILL_INJECT_VERIFICATION_TOP_K=5
+SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS=16000
+SKILL_INJECT_VERIFICATION_MAX_TOKENS=8192
+SKILL_INJECT_VERIFICATION_MAX_RETRIES=1
+```
+
+### Verification Candidates
+
+기본적으로 상위 5개 후보를 검증합니다.
+
+### Large Sources
+
+기본적으로 16,000자를 초과하는 후보는 잘라서 보내지 않습니다.
+
+해당 후보는 `unknown`으로 처리됩니다.
+
+### Retry
+
+응답이 토큰 부족으로 잘린 경우에만 동일한 요청을 한 번 재시도합니다.
+
+기본 출력 토큰 예산:
+
+```text
+1차: 8192
+2차: 16384
+```
+
+다른 오류는 자동 재시도하지 않습니다.
+
+---
+
+# Embedding
+
+기본 임베딩 모델:
+
+```text
+qwen/qwen3-embedding-8b
+```
+
+특징:
+
+* 1024차원 벡터
+* OpenRouter 사용
+* 배치 임베딩 지원
+
+개발 환경에서는 항상 동일한 결과를 생성하는 `FakeEmbedder`를 사용할 수 있습니다.
+
+---
+
+# Offline Mode
+
+인터넷 없이 사용할 수 있는 Lexical Search 모드를 제공합니다.
+
+이 경우 결과에는 다음 상태가 표시됩니다.
+
+```text
+verification_mode: lexical
+```
+
+오프라인 모드는 보수적으로 동작하며 교차 언어 의미 매칭을 확정하지 않습니다.
+
+---
+
+# Project Structure
+
+```text
+src/skill_inject_mcp/
+├── server
+├── schemas
+├── config
+├── registry
+├── embedding
+├── indexing
+└── retrieval
+
+fixtures/skills/
+└── 테스트용 샘플 스킬
+
+tests/
+└── pytest 테스트
+
+AGENTS.md
+└── AI 에이전트용 사용법 및 스키마 문서
+```
+
+---
+
+# Codex Integration
+
+이 프로젝트는 Codex 환경과 연동할 수 있습니다.
+
+Codex의 전역 Skills 목록을 가져와 다음 정보를 가진 매니페스트를 생성합니다.
+
+```text
+Skill Name
+Source SKILL.md Path
+```
+
+환경 변수로 해당 매니페스트를 사용할 수 있습니다.
+
+```env
+SKILL_INJECT_SKILL_MANIFEST=/path/to/manifest.json
+```
+
+`constraints.skills_dir`을 직접 지정하면 해당 설정이 우선합니다.
+
+---
+
+# Recommended Codex Configuration
+
+스킬이 많은 환경에서는 다음 설정을 권장합니다.
+
+```env
+SKILL_INJECT_VERIFICATION_MODE=semantic
+
+SKILL_INJECT_VERIFICATION_TOP_K=5
+
 SKILL_INJECT_VERIFICATION_MAX_SOURCE_CHARS=100000
+
 SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true
+
 SKILL_INJECT_EMBEDDING_BATCH_SIZE=32
 ```
 
-The optional codex_prompt_hook tool returns a UserPromptSubmit additionalContext
-object containing up to three UNVERIFIED candidates. It never blocks the prompt,
-skips simple acknowledgements, and leaves structured requirements and binding to
-resolve_skills. Hook errors are advisory.
+---
 
-The hook uses a published index snapshot and has a 2-second application budget
-(`SKILL_INJECT_HOOK_TIMEOUT_S`). Its embedding request uses HTTPX's async client;
-expiration cancels the actual request, rather than leaving a synchronous worker
-holding the engine lock. Slow resolve/index tools run in worker threads, so they
-cannot block the MCP event loop or hook timer.
+# Prompt Hook
 
-On timeout or embedding failure, discovery falls back to BM25 only. Weak local
-hits are omitted unless their description positively covers the query terms;
-negative or cross-language requirements can therefore produce no fallback
-candidates. This is advisory filtering, never semantic acceptance. The context
-labels the retrieval mode and registry snapshot. `resolve_skills` retains its
-original full-source verification and failure semantics.
+선택적으로 `codex_prompt_hook`을 사용할 수 있습니다.
 
-The server warms the index in the background. A cold hook returns promptly with
-an unavailable context; it does not wait for initial document embeddings. File
-changes schedule at most one background refresh. Until it completes, the hook
-explicitly identifies its last-known catalog. Reader leases keep an old index
-alive until in-flight hooks finish, including during replacement or shutdown.
+사용자가 프롬프트를 입력하면 관련 스킬 후보를 최대 3개까지 참고 정보로 제공합니다.
 
-Exact query embeddings are shared between hook and resolve with a bounded,
-process-local LRU (`SKILL_INJECT_QUERY_CACHE_SIZE=512`; 0 disables it). Keys are
-hashed and include model, dimension, endpoint and instruction identity. Cache
-entries contain vectors, not raw query text; cancelled/invalid batches are never
-cached. HTTP connections are reused and expanded queries are embedded together
-in a single request while preserving RRF ranking behavior.
+특징:
 
-Unchanged catalogs reuse parsed skills after inexpensive file-stat checks.
-Manifest edits, ordinary skill edits, additions/deletions and root/model changes
-invalidate the index. If an external tool preserves file metadata while changing
-content, call `reindex_skills` to force a full content read. Python async callers
-should use `async_prompt_context` and await `engine.aclose()` at shutdown; the
-synchronous `prompt_context` convenience helper closes its per-call async client.
+* 프롬프트 실행을 차단하지 않음
+* 단순한 메시지는 건너뜀
+* 기본 애플리케이션 타임아웃 2초
+* 기존 인덱스 스냅샷 사용
+* 백그라운드 인덱싱 지원
 
-Configure a native MCP hook in Codex versions supporting mcp_tool handlers:
+Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증과 바인딩은 `resolve_skills`가 담당합니다.
+
+---
+
+## Codex Hook Example
 
 ```json
 {
   "type": "mcp_tool",
   "server": "skill-injection",
   "tool": "codex_prompt_hook",
-  "input": {"prompt": "${prompt}"},
+  "input": {
+    "prompt": "${prompt}"
+  },
   "timeout": 2,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
 
-Add it under UserPromptSubmit in hooks.json while preserving existing hooks.
-Codex requires review/trust of the exact new definition. Initial indexing transmits
-installed SKILL.md documents to the configured embedding provider; semantic mode
-also transmits original requirements and candidate sources. Enable this only for
-the catalogs and data the user has authorized.
+---
 
-## HTTP and Codex deadlines
+# Timeout Configuration
 
-HTTP response-read budgets are configurable:
+기본 HTTP 읽기 타임아웃:
 
-| Setting | Default |
-|---|---:|
-| SKILL_INJECT_EMBEDDING_TIMEOUT_S | 180 seconds |
-| SKILL_INJECT_MULTI_QUERY_TIMEOUT_S | 30 seconds |
-| SKILL_INJECT_VERIFICATION_TIMEOUT_S | 120 seconds |
+| Setting                               | Default |
+| ------------------------------------- | ------: |
+| `SKILL_INJECT_EMBEDDING_TIMEOUT_S`    |    180s |
+| `SKILL_INJECT_MULTI_QUERY_TIMEOUT_S`  |     30s |
+| `SKILL_INJECT_VERIFICATION_TIMEOUT_S` |    120s |
 
-Connection/pool waits remain 10 seconds and request writes have a 30-second budget.
-Timeouts also apply when a caller supplies an HTTP client. Embedding timeout errors
-identify the timeout type and configured read budget without including credentials.
+Codex 등록 권장값:
 
-For Codex registration, use startup_timeout_sec=60, tool_timeout_sec=900 and a
-2-second UserPromptSubmit hook timeout. The hook also enforces its own application
-deadline; other HTTP values are per-I/O budgets. The Codex values are outer
-deadlines. Large plans can require multiple requests
-per requirement, so split large plans into smaller batches rather than treating
-these defaults as an unlimited end-to-end allowance. Restart MCP processes after
-changing environment settings.
+| Setting                 | Value |
+| ----------------------- | ----: |
+| `startup_timeout_sec`   |    60 |
+| `tool_timeout_sec`      |   900 |
+| `UserPromptSubmit Hook` |    2s |
 
-See AGENTS.md for the automatic installation/registration workflow. Installation
-includes preserving existing config, exporting the actual global catalog, upserting
-MCP and hook entries, updating global guidance, checking exact hook trust, and
-verifying the registered connection. Ordinary code review and CI do not trigger
-global configuration changes.
+큰 작업은 여러 요구사항과 API 호출이 발생할 수 있으므로 하나의 큰 요청으로 처리하기보다 작은 작업 단위로 나누는 것을 권장합니다.
 
-SKILL
+환경 설정을 변경한 후에는 MCP 프로세스를 재시작해야 합니다.
+
+---
+
+# Notes
+
+* `sqlite-vector`는 선택 사항입니다.
+* 없을 경우 NumPy 기반 NPZ 저장 방식을 사용합니다.
+* BM25 점수는 확률이 아닌 문서 간 상대적인 순위 지표입니다.
+* Semantic Search만으로 `supported` 판정을 만들기 위해서는 별도의 점수 기준을 충족해야 합니다.
+* RRF의 최대 점수보다 `constraints.min_score`를 높게 설정하면 모든 후보가 제거될 수 있습니다.
+* 인덱스 스냅샷은 기본적으로 프로세스 내부에서 유지됩니다.
+* Persistent Embedding Cache를 활성화하면 서버 재시작 이후에도 변경되지 않은 문서의 임베딩을 재사용할 수 있습니다.
+* `pytest`는 실제 HTTP 요청을 차단합니다.
+* 실제 모델 기반 평가는 별도의 Opt-in Live Evaluation으로 실행합니다.
+
+---
+
+# Security & Privacy
+
+Semantic Search 및 Semantic Verification을 활성화하면 일부 데이터가 외부 제공자에게 전송될 수 있습니다.
+
+전송될 수 있는 데이터:
+
+* 스킬 문서
+* 사용자 요구사항
+* 후보 스킬의 설명과 본문
+
+따라서 사용자가 외부 전송을 허용한 스킬 카탈로그와 데이터에 대해서만 활성화하는 것을 권장합니다.
+
+---
+
+# Summary
+
+**Skill Injection MCP**는 AI 에이전트가 작업을 수행하기 전에 현재 요청에 적합한 스킬을 자동으로 찾고 검증할 수 있도록 설계된 MCP 서버입니다.
+
+```text
+Request
+   ↓
+Search Skills
+   ↓
+Hybrid Retrieval
+   ↓
+Semantic Verification
+   ↓
+Dependency Resolution
+   ↓
+Evidence-Based Result
+```
+
+단순한 스킬 추천을 넘어 **요청과 스킬의 실제 지원 범위를 검증하고, 근거와 의존성까지 함께 반환하는 것**을 목표로 합니다.

@@ -73,6 +73,7 @@ class CheckResult(ContractModel):
     citations: list[EvidenceCitation] = Field(default_factory=list)
     unmet_requirements: list[str] = Field(default_factory=list)
     verifier: Literal["semantic", "lexical"] | None = None
+    layer: Literal["meta", "domain"] | None = None
 
 
 class EvidenceItem(ContractModel):
@@ -84,6 +85,7 @@ class EvidenceItem(ContractModel):
     snippet: str | None = None
     name: str | None = None
     description: str | None = None
+    layer: Literal["meta", "domain"] | None = None
 
 
 class GapItem(ContractModel):
@@ -155,3 +157,4 @@ class SkillMeta(ContractModel):
     frontmatter: dict[str, Any] = Field(default_factory=dict)
     content_hash: str = ""
     source_path: str | None = None
+    layer: Literal["meta", "domain"] = "domain"

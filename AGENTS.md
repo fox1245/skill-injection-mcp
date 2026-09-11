@@ -2,6 +2,15 @@
 
 ## Required operational defaults
 
+NeoGraph is a required native execution dependency (`neograph-engine==0.12.1`).
+Install it in the MCP's actual configured Python environment; official Windows
+wheels are available. Never substitute a direct/Python orchestration fallback.
+Each skill requirement executes the native retrieve -> verify -> bind graph.
+The advisory prompt hook executes discover -> validate_output through NeoGraph,
+while cancellable HTTP coroutines stay on the MCP asyncio loop. Verify returned
+execution traces, not only package imports. Request-local graphs are rerun from
+fresh inputs; their Python callbacks are not advertised as durable resumable state.
+
 Start normal installations with a real OpenRouter API key, `SKILL_INJECT_USE_FAKE_EMBEDDER=false`,
 and `SKILL_INJECT_DENSE_BACKEND=sqlite-vector`. Provision and verify these before calling setup complete.
 FakeEmbedder and NumPy are explicit offline/test options only; never silently substitute them
@@ -142,7 +151,7 @@ SKILL_INJECT_OPENROUTER_API_KEY_FILE = "<absolute-path-to-authorized-dotenv-file
 SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE = "true"
 SKILL_INJECT_EMBEDDING_BATCH_SIZE = "32"
 SKILL_INJECT_QUERY_CACHE_SIZE = "512"
-SKILL_INJECT_HOOK_TIMEOUT_S = "2"
+SKILL_INJECT_HOOK_TIMEOUT_S = "120"
 SKILL_INJECT_EMBEDDING_TIMEOUT_S = "180"
 SKILL_INJECT_MULTI_QUERY_TIMEOUT_S = "30"
 SKILL_INJECT_VERIFICATION_TIMEOUT_S = "120"
@@ -164,7 +173,7 @@ Add/update this handler under UserPromptSubmit in hooks.json:
   "server": "skill-injection",
   "tool": "codex_prompt_hook",
   "input": {"prompt": "${prompt}"},
-  "timeout": 2,
+  "timeout": 240,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
@@ -177,7 +186,10 @@ The HTTP read budgets are configurable: embeddings 180 seconds, query expansion
 the same per-request timeout, rather than silently keeping their own defaults.
 
 Codex's tool timeout is an outer deadline (recommended 900 seconds); the advisory
-prompt hook has a 2-second outer deadline and a separate cancellable async budget.
+prompt hook has a 120-second cancellable async budget and a recommended 240-second
+outer deadline. Responses return immediately when ready; these are ceilings, not delays.
+Keep the outer hook deadline above the internal budget. The embedding HTTP read
+budget remains 180 seconds; the hook cancels its own request when its budget expires.
 Cold hooks return unavailable; stale hooks label their last-known catalog while
 one background refresh runs. These are not guarantees that an
 arbitrary multi-requirement request will finish: each requirement can make several

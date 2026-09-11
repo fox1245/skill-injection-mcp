@@ -24,6 +24,7 @@ from skill_inject_mcp.schemas import (
     SkillInjectRequest, SkillInjectResponse,
 )
 from skill_inject_mcp.validation import validate_request
+from skill_inject_mcp.neograph_runtime import run_stages
 
 
 class SkillInjectEngine:
@@ -278,112 +279,120 @@ class SkillInjectEngine:
         if mode == "lexical":
             notes.append("Lexical fallback is not a cross-language semantic verifier.")
         errors = list(self.registry.validation_errors)
-        checks, evidence = [], []
+        checks, evidence, execution = [], [], []
         bindings = {}
         assert self.retriever is not None
         for req in request.requirements:
-            mq = expand_queries(
-                req.description, req.search_query, api_key=self.settings.resolve_api_key(),
-                enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
-                base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
-                client=self._get_chat_client() if self.settings.multi_query_enabled() else None,
-            )
-            if mq.skipped and self.settings.multi_query_enabled():
-                degraded = True
-                notes.append(f"multi_query_skipped for '{req.id}': {mq.reason or 'unknown'}")
-            # Always retrieve the description as well as hints/expansions.
-            queries = list(dict.fromkeys([req.description, *mq.queries]))
-            # Preserve all channel candidates for verification and dense margins.
-            all_hits = self.retriever.retrieve(
-                req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
-            )
-            wanted = classify_requirement_layer(req.description, req.search_query)
-            primary, secondary = partition_hits(all_hits, self.registry.skills, wanted)
-            search_hits = primary or secondary
-            ranked_hits = primary + secondary
-            semantic_assessments = {}
-            if mode == "semantic":
-                candidates = [
-                    self.registry.get(hit.skill_id) for hit in search_hits
-                    if (min_score is None or hit.ranking_score >= min_score)
-                    and self.registry.get(hit.skill_id) is not None
-                ][:self.settings.verification_top_k]
-                verification = self._verifier.verify(
-                    req.description, candidates, api_key=self.settings.resolve_api_key(),
-                    model=self.settings.verification_model, base_url=self.settings.embedding_base_url,
-                    timeout_s=self.settings.verification_timeout_s,
-                    max_source_chars=self.settings.verification_max_source_chars,
-                    max_tokens=self.settings.verification_max_tokens,
-                    max_retries=self.settings.verification_max_retries,
-                    client=self._get_chat_client(),
+            search_hits, ranked_hits, semantic_assessments = [], [], {}
+            def retrieve():
+                nonlocal degraded, search_hits, ranked_hits
+                mq = expand_queries(
+                    req.description, req.search_query, api_key=self.settings.resolve_api_key(),
+                    enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
+                    base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
+                    client=self._get_chat_client() if self.settings.multi_query_enabled() else None,
                 )
-                semantic_assessments = verification.assessments
-                verification_diagnostics.extend(
-                    diagnostic.model_copy(update={"requirement_id": req.id})
-                    for diagnostic in verification.diagnostics
+                if mq.skipped and self.settings.multi_query_enabled():
+                    degraded = True
+                    notes.append(f"multi_query_skipped for '{req.id}': {mq.reason or 'unknown'}")
+                # Always retrieve the description as well as hints/expansions.
+                queries = list(dict.fromkeys([req.description, *mq.queries]))
+                # Preserve all channel candidates for verification and dense margins.
+                all_hits = self.retriever.retrieve(
+                    req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
                 )
-                verification_degraded |= verification.degraded
-                if verification.degraded:
-                    notes.append(f"Verification degraded for '{req.id}': {verification.reason}")
-            accepted = None
-            accepted_assessment = None
-            first_assessment = None
-            first_candidate_id = None
-            rejection_reason = None
-            for hit in search_hits:
-                if min_score is not None and hit.ranking_score < min_score:
-                    continue
-                skill = self.registry.get(hit.skill_id)
-                if skill is None:
-                    continue
-                others = [h for h in search_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
-                runner_up = max(others, key=lambda h: h.dense_score) if others else None
+                wanted = classify_requirement_layer(req.description, req.search_query)
+                primary, secondary = partition_hits(all_hits, self.registry.skills, wanted)
+                search_hits = primary or secondary
+                ranked_hits = primary + secondary
+            def verify():
+                nonlocal semantic_assessments, verification_degraded
                 if mode == "semantic":
-                    assessment = semantic_assessments.get(skill.skill_id)
-                    if assessment is None:
+                    candidates = [
+                        self.registry.get(hit.skill_id) for hit in search_hits
+                        if (min_score is None or hit.ranking_score >= min_score)
+                        and self.registry.get(hit.skill_id) is not None
+                    ][:self.settings.verification_top_k]
+                    verification = self._verifier.verify(
+                        req.description, candidates, api_key=self.settings.resolve_api_key(),
+                        model=self.settings.verification_model, base_url=self.settings.embedding_base_url,
+                        timeout_s=self.settings.verification_timeout_s,
+                        max_source_chars=self.settings.verification_max_source_chars,
+                        max_tokens=self.settings.verification_max_tokens,
+                        max_retries=self.settings.verification_max_retries,
+                        client=self._get_chat_client(),
+                    )
+                    semantic_assessments = verification.assessments
+                    verification_diagnostics.extend(
+                        diagnostic.model_copy(update={"requirement_id": req.id})
+                        for diagnostic in verification.diagnostics
+                    )
+                    verification_degraded |= verification.degraded
+                    if verification.degraded:
+                        notes.append(f"Verification degraded for '{req.id}': {verification.reason}")
+            def bind():
+                accepted = None
+                accepted_assessment = None
+                first_assessment = None
+                first_candidate_id = None
+                rejection_reason = None
+                for hit in search_hits:
+                    if min_score is not None and hit.ranking_score < min_score:
                         continue
-                else:
-                    assessment = evaluate_candidate(req.description, skill, hit, runner_up)
-                if first_assessment is None:
-                    first_assessment = assessment
-                    first_candidate_id = hit.skill_id
-                if not assessment.matched:
-                    continue
-                closure, dependency_errors = self.registry.dependency_closure(skill.skill_id)
-                if dependency_errors:
-                    rejection_reason = "invalid_skill_dependencies"
-                    continue
-                accepted, accepted_assessment = hit, assessment
-                bindings[req.id] = closure
-                break
-            for hit in ranked_hits[:top_k]:
-                skill = self.registry.get(hit.skill_id)
-                evidence.append(EvidenceItem(
-                    skill_id=hit.skill_id, requirement_id=req.id, ranking_score=hit.ranking_score,
-                    dense_rank=hit.dense_rank, sparse_rank=hit.sparse_rank,
-                    snippet=skill.description if skill else None,
-                    name=skill.name if skill else None, description=skill.description if skill else None,
-                    layer=skill.layer if skill else None,
+                    skill = self.registry.get(hit.skill_id)
+                    if skill is None:
+                        continue
+                    others = [h for h in search_hits if h.skill_id != hit.skill_id and h.dense_score is not None]
+                    runner_up = max(others, key=lambda h: h.dense_score) if others else None
+                    if mode == "semantic":
+                        assessment = semantic_assessments.get(skill.skill_id)
+                        if assessment is None:
+                            continue
+                    else:
+                        assessment = evaluate_candidate(req.description, skill, hit, runner_up)
+                    if first_assessment is None:
+                        first_assessment = assessment
+                        first_candidate_id = hit.skill_id
+                    if not assessment.matched:
+                        continue
+                    closure, dependency_errors = self.registry.dependency_closure(skill.skill_id)
+                    if dependency_errors:
+                        rejection_reason = "invalid_skill_dependencies"
+                        continue
+                    accepted, accepted_assessment = hit, assessment
+                    bindings[req.id] = closure
+                    break
+                for hit in ranked_hits[:top_k]:
+                    skill = self.registry.get(hit.skill_id)
+                    evidence.append(EvidenceItem(
+                        skill_id=hit.skill_id, requirement_id=req.id, ranking_score=hit.ranking_score,
+                        dense_rank=hit.dense_rank, sparse_rank=hit.sparse_rank,
+                        snippet=skill.description if skill else None,
+                        name=skill.name if skill else None, description=skill.description if skill else None,
+                        layer=skill.layer if skill else None,
+                    ))
+                assessment = accepted_assessment or first_assessment
+                checks.append(CheckResult(
+                    requirement_id=req.id, matched=accepted is not None,
+                    skill_id=accepted.skill_id if accepted else None,
+                    candidate_skill_id=accepted.skill_id if accepted else first_candidate_id,
+                    ranking_score=accepted.ranking_score if accepted else None,
+                    dense_rank=accepted.dense_rank if accepted else None,
+                    sparse_rank=accepted.sparse_rank if accepted else None,
+                    reason=(accepted_assessment.reason if accepted else
+                            rejection_reason or (assessment.reason if assessment else "no eligible candidates")),
+                    assessment=("supported" if accepted else "blocked" if rejection_reason else
+                                assessment.assessment if assessment else "unknown"),
+                    missing_terms=assessment.missing_terms if assessment else [],
+                    evidence=assessment.evidence if assessment else [],
+                    citations=assessment.citations if assessment else [],
+                    unmet_requirements=assessment.unmet_requirements if assessment else [],
+                    verifier=mode,
+                    layer=(self.registry.get(accepted.skill_id).layer if accepted and self.registry.get(accepted.skill_id) else None),
                 ))
-            assessment = accepted_assessment or first_assessment
-            checks.append(CheckResult(
-                requirement_id=req.id, matched=accepted is not None,
-                skill_id=accepted.skill_id if accepted else None,
-                candidate_skill_id=accepted.skill_id if accepted else first_candidate_id,
-                ranking_score=accepted.ranking_score if accepted else None,
-                dense_rank=accepted.dense_rank if accepted else None,
-                sparse_rank=accepted.sparse_rank if accepted else None,
-                reason=(accepted_assessment.reason if accepted else
-                        rejection_reason or (assessment.reason if assessment else "no eligible candidates")),
-                assessment=("supported" if accepted else "blocked" if rejection_reason else
-                            assessment.assessment if assessment else "unknown"),
-                missing_terms=assessment.missing_terms if assessment else [],
-                evidence=assessment.evidence if assessment else [],
-                citations=assessment.citations if assessment else [],
-                unmet_requirements=assessment.unmet_requirements if assessment else [],
-                verifier=mode,
-                layer=(self.registry.get(accepted.skill_id).layer if accepted and self.registry.get(accepted.skill_id) else None),
-            ))
+            execution.append(run_stages("skill_requirement", [
+                ("retrieve", retrieve), ("verify", verify), ("bind", bind),
+            ]))
         # Propagate unresolved dependencies even when the dependency was optional.
         by_id = {c.requirement_id: c for c in checks}
         graph = {r.id: r.depends_on for r in request.requirements}
@@ -422,5 +431,5 @@ class SkillInjectEngine:
             skills_considered=len(self.registry.skills), notes=notes,
             registry_snapshot=info.get("registry_snapshot"),
             verification_mode=mode, verification_degraded=verification_degraded,
-            verification_diagnostics=verification_diagnostics,
+            verification_diagnostics=verification_diagnostics, execution=execution,
         )

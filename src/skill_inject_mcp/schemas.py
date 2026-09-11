@@ -130,6 +130,7 @@ class VerificationDiagnostic(ContractModel):
 
 
 class SkillInjectResponse(ContractModel):
+    execution: list[dict[str, Any]] = Field(default_factory=list)
     schema_version: Literal["1.0"] = SCHEMA_VERSION
     match_status: MatchStatus
     checks: list[CheckResult] = Field(default_factory=list)

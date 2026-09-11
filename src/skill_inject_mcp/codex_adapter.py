@@ -12,6 +12,7 @@ from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import reciprocal_rank_fusion
 from skill_inject_mcp.retrieve.checks import lexical_gate
 from skill_inject_mcp.registry.layer import classify_requirement_layer
+from skill_inject_mcp.neograph_runtime import run_async_stages
 
 
 def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
@@ -86,6 +87,25 @@ def _hook_result(candidates: list, status: str, catalog: str = "unavailable", sn
 
 
 async def async_prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
+    result = None
+    async def discover():
+        nonlocal result
+        result = await _discover_prompt_context(engine, prompt)
+    async def validate_output():
+        if not isinstance(result, dict) or "hookSpecificOutput" not in result:
+            raise RuntimeError("Invalid skill discovery hook output")
+    execution = await run_async_stages("skill_prompt_hook", [
+        ("discover", discover), ("validate_output", validate_output),
+    ])
+    if result["hookSpecificOutput"].get("additionalContext"):
+        result["hookSpecificOutput"]["additionalContext"] += (
+            "\nExecutor: neograph-engine " + execution["version"] +
+            "; nodes: " + ", ".join(execution["nodes"]) + "."
+        )
+    return result
+
+
+async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:
     """Bound advisory discovery; cancellation reaches the actual async HTTP request."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + engine.settings.hook_timeout_s

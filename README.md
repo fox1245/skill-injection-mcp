@@ -522,6 +522,11 @@ SKILL_INJECT_EMBEDDING_BATCH_SIZE=32
 
 # Prompt Hook
 
+검색·검증은 필수 의존성인 `neograph-engine==0.12.1`의 네이티브 DAG에서 실행합니다.
+`resolve_skills`의 `execution`에는 요구사항별 `retrieve → verify → bind` 실행 기록이 들어갑니다.
+훅은 `discover → validate_output`을 실행하고, 취소는 실제 비동기 HTTP 요청까지 전달합니다.
+NeoGraph 설치·로드 실패는 명시적인 오류이며 별도 실행기로 대체하지 않습니다.
+
 선택적으로 `codex_prompt_hook`을 사용할 수 있습니다.
 
 사용자가 프롬프트를 입력하면 관련 스킬 후보를 최대 3개까지 참고 정보로 제공합니다.
@@ -530,7 +535,7 @@ SKILL_INJECT_EMBEDDING_BATCH_SIZE=32
 
 * 프롬프트 실행을 차단하지 않음
 * 단순한 메시지는 건너뜀
-* 기본 애플리케이션 타임아웃 2초
+* 기본 내부 타임아웃 120초, 상위 Codex 훅 타임아웃 권장값 240초
 * 기존 인덱스 스냅샷 사용
 * 백그라운드 인덱싱 지원
 
@@ -548,7 +553,7 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
   "input": {
     "prompt": "${prompt}"
   },
-  "timeout": 2,
+  "timeout": 240,
   "statusMessage": "Finding installed skill candidates"
 }
 ```
@@ -561,6 +566,7 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 
 | Setting                               | Default |
 | ------------------------------------- | ------: |
+| `SKILL_INJECT_HOOK_TIMEOUT_S`         |    120s |
 | `SKILL_INJECT_EMBEDDING_TIMEOUT_S`    |    180s |
 | `SKILL_INJECT_MULTI_QUERY_TIMEOUT_S`  |     30s |
 | `SKILL_INJECT_VERIFICATION_TIMEOUT_S` |    120s |
@@ -571,7 +577,10 @@ Codex 등록 권장값:
 | ----------------------- | ----: |
 | `startup_timeout_sec`   |    60 |
 | `tool_timeout_sec`      |   900 |
-| `UserPromptSubmit Hook` |    2s |
+| `UserPromptSubmit Hook` |  240s |
+
+내부 훅 제한 120초는 전체 비동기 대기 예산이고, HTTP 읽기 제한과 별도로 적용합니다.
+응답이 도착하면 즉시 반환합니다. 상위 훅 제한은 내부 제한보다 길게 설정하세요.
 
 큰 작업은 여러 요구사항과 API 호출이 발생할 수 있으므로 하나의 큰 요청으로 처리하기보다 작은 작업 단위로 나누는 것을 권장합니다.
 

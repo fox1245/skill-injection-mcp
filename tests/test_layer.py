@@ -57,6 +57,21 @@ def test_domain_requirement_does_not_bind_meta_skill(tmp_path: Path):
         eng.close()
 
 
+def test_agent_skill_security_review_uses_meta_layer():
+    description = (
+        "Review an AI agent skill for prompt injection, dangerous scripts, "
+        "and secret exfiltration before installation."
+    )
+    assert classify_requirement_layer(description) == "meta"
+    assert classify_requirement_layer(
+        description, "skill-inspector SkillSpector security review"
+    ) == "meta"
+    assert classify_requirement_layer("Security review", "SkillSpector") == "meta"
+    assert classify_requirement_layer("Inspect a Codex skill before installation") == "meta"
+    assert classify_requirement_layer("Review code for prompt injection and secret exfiltration") == "domain"
+    assert classify_requirement_layer("Review an agent implementation for security vulnerabilities") == "domain"
+
+
 def test_meta_requirement_binds_meta_skill(tmp_path: Path):
     skills = tmp_path / "skills"
     _write_skill(skills, "skill-creator", "Create or update a Codex skill with SKILL.md frontmatter.")

@@ -21,7 +21,7 @@ from skill_inject_mcp.registry.scan import SkillRegistry
 
 def embedding_identity(settings: Settings) -> tuple:
     return (
-        "fake" if settings.use_fake_embedder or not settings.resolve_api_key() else "openrouter",
+        "fake" if settings.use_fake_embedder else "openrouter",
         settings.embedding_model, settings.embedding_dim, settings.embedding_base_url,
     )
 
@@ -166,7 +166,8 @@ def build_snapshot(
     directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=index_root))
     sparse = dense = None
     try:
-        dense, backend = build_vector_index(directory, dim=settings.embedding_dim)
+        dense, backend = build_vector_index(directory, dim=settings.embedding_dim,
+                                            backend=settings.dense_backend, extension_path=settings.sqlite_vector_path)
         sparse = SparseIndex(directory / "sparse.sqlite")
         sparse.upsert_many(skills)
         dense.upsert_many([(s.skill_id, vectors[hashes[s.skill_id]]) for s in skills])

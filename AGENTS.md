@@ -1,5 +1,38 @@
 # AGENTS.md — Skill Injection MCP
 
+## Required operational defaults
+
+Start normal installations with a real OpenRouter API key, `SKILL_INJECT_USE_FAKE_EMBEDDER=false`,
+and `SKILL_INJECT_DENSE_BACKEND=sqlite-vector`. Provision and verify these before calling setup complete.
+FakeEmbedder and NumPy are explicit offline/test options only; never silently substitute them
+when a key is missing or a native extension fails. Explain the error and repair the setup.
+
+Use the official [sqliteai/sqlite-vector release](https://github.com/sqliteai/sqlite-vector/releases/tag/1.1.0)
+library directly. Python wheels and local compilation are not required: Windows uses vector.dll,
+Linux vector.so, and macOS vector.dylib. After installing Python dependencies, run:
+
+```bash
+python scripts/setup_sqlite_vector.py --output-dir /absolute/path/to/native
+```
+
+The script pins version 1.1.0, verifies the official archive SHA-256, and checks native cosine search.
+Set `SKILL_INJECT_SQLITE_VECTOR_PATH` to the resulting absolute library path.
+To install without network access, pass `--archive /path/to/the-official-release.zip`.
+Do not confuse this extension with the separate sqlite-vec project.
+
+Keep credentials in an authorized, git-ignored .env file. Set
+`SKILL_INJECT_OPENROUTER_API_KEY_FILE=/absolute/path/to/authorized/.env` to reuse its
+OPENROUTER_API_KEY, including a shared file used by another MCP. The explicitly selected file is
+authoritative; missing files/keys are errors. Never print or commit the key or copy it into Codex config.
+The config contains only the path. Reuse existing user consent for remote embeddings and re-embedding;
+obtain consent only when that data flow has not already been authorized. Unit tests remain offline.
+
+Verify the actual configured process reports OpenRouterEmbedder, sqlite-vector, and no fallback.
+Verify native vector_version()/vector_backend() and a successful retrieval; file existence is insufficient.
+Preserve existing indexes and model-specific caches during migration. A new model must not reuse Fake
+vectors. Reindex the authorized data and report any missing vectors or API failures.
+
+
 ## Purpose
 
 Call `resolve_skills` before inventing workflows. Bind required capabilities to indexed Agent Skills.
@@ -102,6 +135,10 @@ PYTHONUTF8 = "1"
 PYTHONUNBUFFERED = "1"
 SKILL_INJECT_SKILL_MANIFEST = "<absolute-path-to-catalog.json>"
 SKILL_INJECT_INDEX_DIR = "<absolute-path-to-local-index-cache>"
+SKILL_INJECT_USE_FAKE_EMBEDDER = "false"
+SKILL_INJECT_DENSE_BACKEND = "sqlite-vector"
+SKILL_INJECT_SQLITE_VECTOR_PATH = "<absolute-path-to-native-vector-library>"
+SKILL_INJECT_OPENROUTER_API_KEY_FILE = "<absolute-path-to-authorized-dotenv-file>"
 SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE = "true"
 SKILL_INJECT_EMBEDDING_BATCH_SIZE = "32"
 SKILL_INJECT_QUERY_CACHE_SIZE = "512"
@@ -219,8 +256,8 @@ dense rank ascending, skill_id ascending. BM25 values are not confidence probabi
 Only lexical fallback applies a positive sparse-score or dense-margin gate.
 Semantic verification uses retrieval scores for ranking, not fulfillment.
 
-Optional sqlite-vector storage uses exact cosine in Python; it is not native ANN.
-Otherwise numpy stores vectors in an NPZ without pickle. Bulk writes persist once per generation.
+sqlite-vector is the default and executes native exact cosine with vector_full_scan.
+NumPy NPZ storage is an explicit offline option. Bulk writes persist once per generation.
 Rerank `qwen3-0.6b` remains a stub and sets `retriever_degraded`.
 
 ## Validation

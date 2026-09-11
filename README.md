@@ -254,7 +254,9 @@ OPENROUTER_API_KEY=your_api_key
 
 `.env` 파일은 Git에 커밋하지 않습니다.
 
-API Key가 없으면 실제 임베딩 대신 개발용 `FakeEmbedder`가 사용됩니다.
+운영 기본값은 실제 `OpenRouterEmbedder`입니다. API Key가 없으면 오류를 반환합니다. 테스트에서만 `SKILL_INJECT_USE_FAKE_EMBEDDER=true`를 명시합니다.
+
+공식 네이티브 라이브러리는 `python scripts/setup_sqlite_vector.py --output-dir .native`로 설치합니다. Windows에서는 `SKILL_INJECT_SQLITE_VECTOR_PATH`에 `vector.dll`의 절대 경로를 지정합니다. Python 휠이나 소스 빌드는 필요하지 않습니다. `SKILL_INJECT_OPENROUTER_API_KEY_FILE`에 승인된 `.env` 경로를 지정하면 다른 MCP와 같은 키 파일을 사용할 수 있습니다.
 
 ---
 
@@ -579,8 +581,8 @@ Codex 등록 권장값:
 
 # Notes
 
-* `sqlite-vector`는 선택 사항입니다.
-* 없을 경우 NumPy 기반 NPZ 저장 방식을 사용합니다.
+* `sqliteai/sqlite-vector`가 기본 백엔드이며 네이티브 `vector_full_scan`으로 코사인 유사도를 계산합니다.
+* DLL/SO 로드 실패는 오류입니다. NumPy 저장은 `SKILL_INJECT_DENSE_BACKEND=numpy`를 명시한 오프라인 모드에서만 사용합니다.
 * BM25 점수는 확률이 아닌 문서 간 상대적인 순위 지표입니다.
 * Semantic Search만으로 `supported` 판정을 만들기 위해서는 별도의 점수 기준을 충족해야 합니다.
 * RRF의 최대 점수보다 `constraints.min_score`를 높게 설정하면 모든 후보가 제거될 수 있습니다.

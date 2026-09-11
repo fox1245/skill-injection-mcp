@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
+    dense_backend: Literal["sqlite-vector", "numpy"] = "sqlite-vector"
+    sqlite_vector_path: Path | None = None
+    openrouter_api_key_file: Path | None = Field(
+        default=None, description="Authorized dotenv file containing OPENROUTER_API_KEY; never log its contents",
+    )
     rrf_k: int = Field(default=60, ge=1)
     retrieve_top_k: int = Field(default=20, ge=1)
     # Returned evidence width; acceptance uses the complete retrieved candidate pool.
@@ -61,6 +66,15 @@ class Settings(BaseSettings):
         # Also accept bare OPENROUTER_API_KEY via env without prefix
         import os
 
+        if self.openrouter_api_key_file is not None:
+            from dotenv import dotenv_values
+            source = self.openrouter_api_key_file.expanduser().resolve()
+            if not source.is_file():
+                raise ValueError("Configured OpenRouter key file does not exist")
+            key = dotenv_values(source, interpolate=False).get("OPENROUTER_API_KEY")
+            if not key or not key.strip():
+                raise ValueError("Configured OpenRouter key file has no OPENROUTER_API_KEY")
+            return key.strip()
         return self.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
 
     def multi_query_enabled(self) -> bool:

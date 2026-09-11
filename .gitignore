@@ -13,3 +13,7 @@ venv/
 *.npz
 *.sqlite
 .DS_Store
+.native/
+*.dll
+*.so
+*.dylib

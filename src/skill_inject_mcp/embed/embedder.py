@@ -302,8 +302,10 @@ def build_embedder(
     timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
     query_cache_size: int = 512,
 ) -> tuple[Embedder, bool]:
-    """Return (embedder, degraded). degraded=True when falling back to FakeEmbedder."""
-    if use_fake or not api_key:
-        return FakeEmbedder(dim=dim, query_cache_size=query_cache_size), bool(not use_fake and not api_key)
+    """Return the explicitly selected embedder; missing credentials are an error."""
+    if use_fake:
+        return FakeEmbedder(dim=dim, query_cache_size=query_cache_size), False
+    if not api_key or not api_key.strip():
+        raise ValueError("OPENROUTER_API_KEY is required unless the fake embedder is explicitly enabled")
     return OpenRouterEmbedder(api_key=api_key, model=model, dim=dim, base_url=base_url,
                               timeout_s=timeout_s, query_cache_size=query_cache_size), False

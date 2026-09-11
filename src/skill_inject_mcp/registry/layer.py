@@ -28,7 +28,9 @@ _KO = (
 )
 _REQ_META = re.compile(
     r"(?is)(?:skill\.md|skil{1,2}[-_\s]*injection|self[-_\s]*directing|"
-    r"agentx-codex-conductor|meta[- ]?skill|"
+    r"agentx-codex-conductor|meta[- ]?skill|\b(?:skill-inspector|skillspector)\b|"
+    r"\b(?:review(?:ing)?|inspect(?:ing)?|audit(?:ing)?)\s+"
+    r"(?:(?:a|an|the)\s+)?(?:(?:ai\s+)?agent\s+|codex\s+)?skills?\b|"
     r"create(?:\s+or\s+update)?\s+(?:a\s+)?(?:codex\s+)?skill|"
     r"install(?:able)?\s+(?:a\s+)?(?:codex\s+)?skill|"
     r"skill catalog|audit(?:ing)?\s+skills?|"

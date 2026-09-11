@@ -47,3 +47,9 @@ def offline_tests(monkeypatch):
     async def deny_async_network(*args, **kwargs):
         raise AssertionError("Tests must use httpx.MockTransport, not real async HTTP")
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny_async_network)
+
+
+@pytest.fixture(autouse=True)
+def explicit_test_backend(monkeypatch):
+    monkeypatch.setenv("SKILL_INJECT_DENSE_BACKEND", "numpy")
+    monkeypatch.delenv("SKILL_INJECT_OPENROUTER_API_KEY_FILE", raising=False)

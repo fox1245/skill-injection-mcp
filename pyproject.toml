@@ -7,6 +7,7 @@ name = "skill-inject-mcp"
 version = "0.1.0"
 description = "Skill Injection MCP server — hybrid retrieval over Agent Skills (SKILL.md)"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = [
   "neograph-engine==0.12.1",

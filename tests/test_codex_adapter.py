@@ -64,3 +64,14 @@ def test_manifest_content_updates_are_seen(tmp_path):
         assert engine.get_skill_body("installer")["source_path"] == str(original.resolve())
     finally:
         engine.close()
+
+
+def test_prompt_hook_includes_retry_hints_for_partial_no_match(engine):
+    result = prompt_context(engine, "Install Python project dependencies with pip")
+    hints = result["hookSpecificOutput"].get("retry_hints", {})
+    actions = hints.get("on_partial_or_no_match", [])
+    assert any("rephrase" in action for action in actions)
+    assert any("search_query" in action for action in actions)
+    assert any("resolve_skills" in action or "once more" in action or "get_skill_body" in action for action in actions)
+    assert "partial or no_match" in result["hookSpecificOutput"]["additionalContext"]
+    assert "do not give up immediately" in result["hookSpecificOutput"]["additionalContext"]

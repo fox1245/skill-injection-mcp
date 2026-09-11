@@ -82,8 +82,26 @@ def _hook_result(candidates: list, status: str, catalog: str = "unavailable", sn
           "Preserve all user constraints. Read selected skills with get_skill_body and the "
           "returned registry_snapshot. Never interpret discovery or complete as execution success. "
           "Do not force irrelevant skills or stop solely because no matching skill exists."
+        + "\nIf the resolved result is partial or no_match, do not give up immediately: "
+          "rephrase the requirement as atomic units (verb + target + constraint), pack goal, "
+          "current step, and blockage into search_query, then call resolve_skills once more "
+          "with the changed arguments. If 3+ candidates score similarly, read each with "
+          "get_skill_body and compare directly before deciding."
     )
-    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": context,
+            "retry_hints": {
+                "on_partial_or_no_match": [
+                    "rephrase requirement as atomic verb+target+constraint units",
+                    "pack goal/current_step/blockage into search_query",
+                    "call resolve_skills once more with changed arguments",
+                    "compare 3+ similarly-scored candidates via get_skill_body",
+                ],
+            },
+        },
+    }
 
 
 async def async_prompt_context(engine: SkillInjectEngine, prompt: str) -> dict:

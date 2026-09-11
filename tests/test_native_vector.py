@@ -33,6 +33,7 @@ def test_shared_key_file_is_authoritative(tmp_path, monkeypatch):
 
 def test_default_backend_is_native(monkeypatch):
     monkeypatch.delenv("SKILL_INJECT_DENSE_BACKEND", raising=False)
+    monkeypatch.delenv("SKILL_INJECT_USE_FAKE_EMBEDDER", raising=False)
     settings=Settings(_env_file=None)
     assert settings.dense_backend=="sqlite-vector"
     assert settings.use_fake_embedder is False

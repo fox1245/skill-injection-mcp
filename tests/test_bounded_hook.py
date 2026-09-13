@@ -167,6 +167,7 @@ def test_failed_refresh_uses_explicit_last_known_catalog(engine, monkeypatch):
 
 
 def test_mcp_event_loop_stays_responsive_during_sync_resolve(engine, monkeypatch):
+    engine.settings.prompt_hook_enabled = True
     from skill_inject_mcp import server
     entered, release = threading.Event(), threading.Event()
     original = engine.resolve

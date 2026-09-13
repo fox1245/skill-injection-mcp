@@ -558,7 +558,20 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 
 ---
 
-## Codex Hook Example
+## Codex Hook Example (optional)
+
+자동 후보 검색은 기본 비활성입니다. 일반 질문과 익숙한 코딩은 추가 검색 없이 진행하며,
+낯선 전문 작업이나 구체적인 역량 부족이 있을 때 `resolve_skills`를 호출합니다.
+사용자가 특정 스킬을 지정하면 `get_skill_body`로 바로 읽고, 요구사항이 같으면 기존 선택을 재사용합니다.
+`partial`/`no_match`만으로 중단하거나 자동 재시도하지 않습니다.
+
+기본 응답은 요약이며 판정, 미충족 요구사항, 검증 모드와 오류를 보존합니다.
+`detail="full"` 또는 `get_resolution_details(resolution_id)`로 원문 인용과 실행 추적을 읽을 수 있습니다.
+상세 결과는 로컬 프로세스 내 15분, 최대 32건/4 MiB로 제한됩니다. 만료·퇴출·재시작된 ID는 오류를 반환합니다.
+캐시에 담을 수 없는 큰 결과는 상세 응답을 그대로 반환합니다.
+
+자동 제안을 명시적으로 원하는 경우에만 `SKILL_INJECT_PROMPT_HOOK_ENABLED=true`를 설정하고
+아래 훅을 등록합니다. 기본 설치에는 등록하지 않습니다.
 
 ```json
 {
@@ -592,7 +605,7 @@ Codex 등록 권장값:
 | ----------------------- | ----: |
 | `startup_timeout_sec`   |    60 |
 | `tool_timeout_sec`      |   900 |
-| `UserPromptSubmit Hook` |  240s |
+| `UserPromptSubmit Hook` (명시적으로 활성화한 경우만) |  240s |
 
 내부 훅 제한 120초는 전체 비동기 대기 예산이고, HTTP 읽기 제한과 별도로 적용합니다.
 응답이 도착하면 즉시 반환합니다. 상위 훅 제한은 내부 제한보다 길게 설정하세요.

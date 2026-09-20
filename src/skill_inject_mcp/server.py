@@ -77,7 +77,6 @@ async def get_skill_body(skill_id: str, registry_snapshot: str | None = None) ->
 
 
 
-@mcp.tool()
 async def codex_prompt_hook(prompt: str) -> dict[str, Any]:
     """Optional discovery hook, disabled by default; never required before a workflow.
 
@@ -88,6 +87,12 @@ async def codex_prompt_hook(prompt: str) -> dict[str, Any]:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}}
     from skill_inject_mcp.codex_adapter import async_prompt_context
     return await async_prompt_context(_engine, prompt)
+
+
+# A disabled lifecycle hook must not look like an ordinary discovery tool.
+# Keep the callable for local integrations, but advertise it only on opt-in.
+if _engine.settings.prompt_hook_enabled:
+    mcp.tool()(codex_prompt_hook)
 
 
 def main() -> None:

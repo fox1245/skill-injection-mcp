@@ -37,7 +37,8 @@ def test_real_stdio_hook_responds_while_resolve_is_running(tmp_path):
         server.main()
     '''), encoding="utf-8")
     async def run():
-        env = dict(os.environ, PYTHONUTF8="1", OPENROUTER_API_KEY="")
+        env = dict(os.environ, PYTHONUTF8="1", OPENROUTER_API_KEY="",
+                   SKILL_INJECT_PROMPT_HOOK_ENABLED="true")
         params = StdioServerParameters(command=sys.executable,
             args=["-B", "-u", str(script), str(root / "fixtures" / "skills"), str(tmp_path / "index"), str(marker)],
             env=env, cwd=str(root))
@@ -45,6 +46,7 @@ def test_real_stdio_hook_responds_while_resolve_is_running(tmp_path):
             async with stdio_client(params, errlog=log) as (read, write):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
+                    assert "codex_prompt_hook" in {t.name for t in (await session.list_tools()).tools}
                     slow = asyncio.create_task(session.call_tool("resolve_skills", {"request": {
                         "schema_version": "1.0", "requirements": [{"id": "r", "description": "Install Python packages with pip"}],
                     }}))

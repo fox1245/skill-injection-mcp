@@ -4,6 +4,13 @@ import json
 from skill_inject_mcp.config import Settings
 
 
+def test_disabled_hook_is_not_advertised_as_a_discovery_tool():
+    from skill_inject_mcp import server
+    names = {tool.name for tool in asyncio.run(server.mcp.list_tools())}
+    assert "codex_prompt_hook" not in names
+    assert {"resolve_skills", "get_skill_body", "reindex_skills"} <= names
+
+
 def test_prompt_hook_default_does_no_discovery(monkeypatch):
     from skill_inject_mcp import server
     class Engine:

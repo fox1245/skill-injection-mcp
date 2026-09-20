@@ -59,7 +59,7 @@ python scripts/setup_sqlite_vector.py --output-dir /absolute/path/to/native
 ## 인덱스와 카탈로그
 
 - `SKILL_INJECT_SKILL_MANIFEST`: 실제 활성 카탈로그(catalog.json). `fixtures/skills`는 테스트 전용입니다.
-- `codex_prompt_hook`은 기본 비활성입니다. 자동 제안이 필요한 경우에만 `SKILL_INJECT_PROMPT_HOOK_ENABLED=true`와 명시적인 훅 등록을 함께 사용합니다.
+- `codex_prompt_hook`은 기본 비활성이며 이 상태에서는 MCP 도구 목록에도 노출하지 않습니다. 자동 제안이 필요한 경우에만 `SKILL_INJECT_PROMPT_HOOK_ENABLED=true`와 명시적인 훅 등록을 함께 사용합니다. 설정을 바꾸면 서버를 재시작해야 도구 목록에 반영됩니다.
 - 후보는 '미검증(unverified)'입니다. hook 후보만으로 스킬을 실행하지 마세요.
 - `resolve_skills`는 필요할 때 쓰는 검색 도구입니다. 바인딩이 작업 승인을 의미하지 않습니다.
 - 기본 응답은 판정·미충족 요구사항·오류를 보존하는 요약입니다. `detail="full"` 또는 `get_resolution_details(resolution_id)`로 원문 인용과 실행 기록을 읽습니다. 상세 결과는 프로세스 내 15분, 최대 32건/4 MiB로 제한되며 만료 시 오류를 반환합니다.

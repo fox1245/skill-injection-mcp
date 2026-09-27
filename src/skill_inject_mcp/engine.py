@@ -104,8 +104,10 @@ class SkillInjectEngine:
             self._source_signature = signature
             self._snapshot.source_signature = signature
             return self._snapshot.info()
-        candidate = build_snapshot(self.settings, registry, root, snapshot_id, self._snapshot,
-                                   embedder_state=self._get_embedder())
+        candidate = build_snapshot(
+            self.settings, registry, root, snapshot_id, self._snapshot,
+            embedder_state=self._get_embedder() if self.settings.retrieval_mode == "hybrid" else None,
+        )
         retriever = HybridRetriever(
             sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
             skills=registry.skills, rrf_k=self.settings.rrf_k,
@@ -263,8 +265,10 @@ class SkillInjectEngine:
         min_score = constraints.min_score if constraints else None
         info = self.ensure_index(skills_dir=root)
         degraded = self.embedder_degraded
-        if degraded:
-            notes.append("No OPENROUTER_API_KEY; using FakeEmbedder (retriever_degraded)")
+        if self.settings.retrieval_mode == "lexical":
+            notes.append("Local lexical-only retrieval; no embeddings or remote query expansion.")
+        elif degraded:
+            notes.append("Embedding retrieval degraded.")
         n_meta = sum(1 for skill in self.registry.all() if skill.layer == "meta")
         notes.append(
             f"skill layers: meta={n_meta} domain={len(self.registry.skills) - n_meta}; "
@@ -287,7 +291,8 @@ class SkillInjectEngine:
             def retrieve():
                 nonlocal degraded, search_hits, ranked_hits
                 mq = expand_queries(
-                    req.description, req.search_query, api_key=self.settings.resolve_api_key(),
+                    req.description, req.search_query,
+                    api_key=None if self.settings.retrieval_mode == "lexical" else self.settings.resolve_api_key(),
                     enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
                     base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
                     client=self._get_chat_client() if self.settings.multi_query_enabled() else None,

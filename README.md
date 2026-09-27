@@ -269,7 +269,7 @@ OPENROUTER_API_KEY=your_api_key
 
 `.env` 파일은 Git에 커밋하지 않습니다.
 
-운영 기본값은 실제 `OpenRouterEmbedder`입니다. API Key가 없으면 오류를 반환합니다. 테스트에서만 `SKILL_INJECT_USE_FAKE_EMBEDDER=true`를 명시합니다.
+기본 hybrid 검색은 실제 `OpenRouterEmbedder`를 사용하며 API Key가 없으면 오류를 반환합니다. 키 없이 사용하는 별도의 lexical-only 설정은 아래 Offline Mode를 참고합니다. `SKILL_INJECT_USE_FAKE_EMBEDDER=true`는 테스트 전용입니다.
 
 공식 네이티브 라이브러리는 `python scripts/setup_sqlite_vector.py --output-dir .native`로 설치합니다. Windows에서는 `SKILL_INJECT_SQLITE_VECTOR_PATH`에 `vector.dll`의 절대 경로를 지정합니다. Python 휠이나 소스 빌드는 필요하지 않습니다. `SKILL_INJECT_OPENROUTER_API_KEY_FILE`에 승인된 `.env` 경로를 지정하면 다른 MCP와 같은 키 파일을 사용할 수 있습니다.
 
@@ -460,15 +460,18 @@ qwen/qwen3-embedding-8b
 
 # Offline Mode
 
-인터넷 없이 사용할 수 있는 Lexical Search 모드를 제공합니다.
+키·네트워크·벡터 확장 없이 실제 스킬 매니페스트를 검색하려면 서버를 시작하기 전에 다음을 설정합니다.
 
-이 경우 결과에는 다음 상태가 표시됩니다.
-
-```text
-verification_mode: lexical
+```env
+SKILL_INJECT_RETRIEVAL_MODE=lexical
+SKILL_INJECT_VERIFICATION_MODE=lexical
+SKILL_INJECT_SKILL_MANIFEST=/path/to/existing-skills-manifest.json
+SKILL_INJECT_PROMPT_HOOK_ENABLED=false
 ```
 
-오프라인 모드는 보수적으로 동작하며 교차 언어 의미 매칭을 확정하지 않습니다.
+매니페스트의 `SKILL.md` 경로는 모두 존재해야 합니다. 이 모드는 SQLite sparse 인덱스만 만들며 임베딩·dense 검색·multi-query 호출을 하지 않습니다. FakeEmbedder를 사용하지 않고 API Key도 요구하지 않습니다. `resolve_skills`로 판정과 `registry_snapshot`을 확인한 뒤, 선택된 스킬만 동일한 snapshot으로 `get_skill_body`를 호출합니다. 자동 훅은 별도로 켜고 등록하지 않는 한 비활성입니다.
+
+결과에는 `verification_mode: lexical`이 표시됩니다. 보수적인 어휘 판정이며 한국어/영어 교차언어 의미 매칭은 보장하지 않습니다. `partial`, `unknown`, `no_match`를 승인으로 취급하지 않습니다.
 
 ---
 

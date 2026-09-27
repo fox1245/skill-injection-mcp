@@ -103,12 +103,14 @@ class HybridRetriever:
         self,
         *,
         sparse: SparseIndex,
-        dense: VectorIndex,
-        embedder: Embedder,
+        dense: VectorIndex | None,
+        embedder: Embedder | None,
         skills: dict[str, SkillMeta],
         rrf_k: int = 60,
         retrieve_top_k: int = 20,
     ) -> None:
+        if (dense is None) != (embedder is None):
+            raise ValueError("dense index and embedder must be enabled together")
         self.sparse = sparse
         self.dense = dense
         self.embedder = embedder
@@ -136,17 +138,21 @@ class HybridRetriever:
 
         dense_by_query: list[list[tuple[str, float]]] = []
         sparse_by_query: list[list[tuple[str, float, int]]] = []
-        query_vectors = self.embedder.embed_queries(qlist)
-        if len(query_vectors) != len(qlist):
-            raise ValueError("Query embedding count does not match expanded queries")
-        for q, qvec in zip(qlist, query_vectors):
-            sparse_hits = self.sparse.search(q, top_k=self.retrieve_top_k)
-            sparse_by_query.append(sparse_hits)
-            dense_hits = self.dense.search(qvec, top_k=self.retrieve_top_k)
-            dense_by_query.append(dense_hits)
+        if self.embedder is None:
+            for q in qlist:
+                sparse_by_query.append(self.sparse.search(q, top_k=self.retrieve_top_k))
+        else:
+            query_vectors = self.embedder.embed_queries(qlist)
+            if len(query_vectors) != len(qlist):
+                raise ValueError("Query embedding count does not match expanded queries")
+            for q, qvec in zip(qlist, query_vectors):
+                sparse_by_query.append(self.sparse.search(q, top_k=self.retrieve_top_k))
+                dense_by_query.append(self.dense.search(qvec, top_k=self.retrieve_top_k))
 
         if len(qlist) == 1:
-            fused = reciprocal_rank_fusion(dense_by_query[0], sparse_by_query[0], k=self.rrf_k)
+            fused = reciprocal_rank_fusion(
+                dense_by_query[0] if dense_by_query else [], sparse_by_query[0], k=self.rrf_k
+            )
         else:
             dense_merged, sparse_merged = _merge_best_scores(dense_by_query, sparse_by_query)
             fused = reciprocal_rank_fusion(dense_merged, sparse_merged, k=self.rrf_k)

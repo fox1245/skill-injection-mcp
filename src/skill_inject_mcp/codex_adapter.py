@@ -127,10 +127,11 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
         width = engine.settings.retrieve_top_k
         sparse = snapshot.sparse.search_readonly(stripped, top_k=width)
         selected = []
-        status = "BM25-only fallback (embedding deadline exceeded)"
+        status = ("BM25-only lexical mode" if snapshot.embedder is None
+                  else "BM25-only fallback (embedding deadline exceeded)")
         # Reserve a little time for local ranking, rendering, and cancellation cleanup.
         remaining = deadline - loop.time() - min(.05, engine.settings.hook_timeout_s * .1)
-        if remaining > 0:
+        if remaining > 0 and snapshot.embedder is not None:
             try:
                 vector = (await asyncio.wait_for(snapshot.embedder.aembed_queries([stripped]), remaining))[0]
                 dense = snapshot.dense.search_readonly(vector, top_k=width)

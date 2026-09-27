@@ -118,6 +118,48 @@ def test_missing_skill_no_match(engine: SkillInjectEngine):
     assert resp.gaps
 
 
+def test_lexical_mode_uses_real_sparse_index_without_embedding_or_key(tmp_path: Path):
+    settings = Settings(
+        skills_dir=FIXTURES,
+        index_dir=tmp_path / "idx",
+        retrieval_mode="lexical",
+        openrouter_api_key_file=tmp_path / "missing.env",
+    )
+    eng = SkillInjectEngine(settings)
+    try:
+        info = eng.reindex()
+        assert info["embedder"] == "none"
+        assert info["dense_backend"] == "off"
+        assert info["skills_indexed"] >= 2
+
+        result = eng.resolve(SkillInjectRequest(
+            requirements=[_req(
+                id="bm25", description="Locate FTS5PorterTokenXyz in sparse index",
+                search_query="FTS5PorterTokenXyz",
+            )]
+        ))
+        assert result.match_status == MatchStatus.complete
+        assert result.checks[0].skill_id == "python-bm25"
+        assert result.checks[0].dense_rank is None
+        body = eng.get_skill_body("python-bm25", result.registry_snapshot)
+        assert body["found"]
+        assert "FTS5PorterTokenXyz" in body["body"]
+
+        absent = eng.resolve(SkillInjectRequest(
+            requirements=[_req(id="absent", description="HelmKubernetesKubectlZZZNOMATCH")]
+        ))
+        assert absent.match_status == MatchStatus.no_match
+    finally:
+        eng.close()
+
+
+def test_lexical_retrieval_rejects_remote_semantic_verification():
+    import pytest
+
+    with pytest.raises(ValueError, match="lexical verification"):
+        Settings(retrieval_mode="lexical", verification_mode="semantic")
+
+
 def test_synonym_via_dense_fake_embedder(engine: SkillInjectEngine):
     resp = engine.resolve(
         SkillInjectRequest(

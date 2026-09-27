@@ -46,6 +46,12 @@ Python/직접 실행 폴백으로 대체하지 않습니다. 각 스킬 요구�
 정상 설치 기본값: `SKILL_INJECT_USE_FAKE_EMBEDDER=false`, `SKILL_INJECT_DENSE_BACKEND=sqlite-vector`.
 키 없음/네이티브 확장 실패 시 FakeEmbedder·NumPy를 조용히 대체하지 않고, 오류를 설명하고 설정을 수리합니다.
 
+승인된 키 없는 로컬 실행은 `SKILL_INJECT_RETRIEVAL_MODE=lexical`과
+`SKILL_INJECT_VERIFICATION_MODE=lexical`을 함께 지정합니다. 이 경우 실제 매니페스트의
+존재하는 `SKILL.md`만 sparse 인덱싱하며 임베딩·dense·multi-query를 실행하지 않습니다.
+FakeEmbedder는 여전히 테스트 전용입니다. hybrid의 키·네이티브 의존성을 우회하는
+암묵적 폴백이 아니며, 두 모드는 명시적으로 구분합니다.
+
 sqlite-vector는 공식 [sqliteai/sqlite-vector 1.1.0 release](https://github.com/sqliteai/sqlite-vector/releases/tag/1.1.0) 라이브러리를 직접 사용합니다.
 윈도우 vector.dll, 리눅스 vector.so, macOS vector.dylib. Python wheel/컴파일 불필요. 설치 후:
 

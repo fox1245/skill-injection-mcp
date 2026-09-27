@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from skill_inject_mcp.timeouts import (
@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
+    retrieval_mode: Literal["hybrid", "lexical"] = "hybrid"
     dense_backend: Literal["sqlite-vector", "numpy"] = "sqlite-vector"
     sqlite_vector_path: Path | None = None
     openrouter_api_key_file: Path | None = Field(
@@ -63,6 +64,13 @@ class Settings(BaseSettings):
     verification_max_source_chars: int = Field(default=16000, ge=1)
     verification_cache_size: int = Field(default=256, ge=0)
 
+    @model_validator(mode="after")
+    def validate_retrieval_mode(self):
+        if self.retrieval_mode == "lexical" and self.verification_mode != "lexical":
+            raise ValueError("lexical retrieval requires lexical verification")
+        return self
+
+
     def resolve_api_key(self) -> str | None:
         # Also accept bare OPENROUTER_API_KEY via env without prefix
         import os
@@ -80,7 +88,7 @@ class Settings(BaseSettings):
 
     def multi_query_enabled(self) -> bool:
         """True when multi-query is configured on and an API key is available."""
-        return bool(self.multi_query) and bool(self.resolve_api_key())
+        return self.retrieval_mode == "hybrid" and bool(self.multi_query) and bool(self.resolve_api_key())
 
 
 def get_settings(**overrides) -> Settings:

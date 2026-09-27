@@ -20,6 +20,8 @@ from skill_inject_mcp.registry.scan import SkillRegistry
 
 
 def embedding_identity(settings: Settings) -> tuple:
+    if settings.retrieval_mode == "lexical":
+        return ("lexical",)
     return (
         "fake" if settings.use_fake_embedder else "openrouter",
         settings.embedding_model, settings.embedding_dim, settings.embedding_base_url,
@@ -49,10 +51,10 @@ class IndexSnapshot:
     root: Path
     snapshot_id: str
     identity: tuple
-    embedder: Embedder
+    embedder: Embedder | None
     embedder_degraded: bool
     sparse: SparseIndex
-    dense: VectorIndex
+    dense: VectorIndex | None
     backend: str
     vectors: dict[str, np.ndarray]
     directory: Path
@@ -88,7 +90,7 @@ class IndexSnapshot:
         return {
             "skills_indexed": len(self.registry.skills),
             "dense_backend": self.backend,
-            "embedder": type(self.embedder).__name__,
+            "embedder": type(self.embedder).__name__ if self.embedder is not None else "none",
             "embedder_degraded": self.embedder_degraded,
             "validation_errors": [e.model_dump() for e in self.registry.validation_errors],
             "skills_dir": str(self.root),
@@ -106,7 +108,8 @@ class IndexSnapshot:
 
     def _dispose(self) -> None:
         self.sparse.close()
-        self.dense.close()
+        if self.dense is not None:
+            self.dense.close()
         if self.directory.exists():
             _remove_generation(self.directory, self.index_root)
 
@@ -117,6 +120,23 @@ def build_snapshot(
     *, embedder_state: tuple[Embedder, bool] | None = None,
 ) -> IndexSnapshot:
     identity = embedding_identity(settings)
+    if settings.retrieval_mode == "lexical":
+        index_root = Path(settings.index_dir).resolve()
+        index_root.mkdir(parents=True, exist_ok=True)
+        directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=index_root))
+        sparse = None
+        try:
+            sparse = SparseIndex(directory / "sparse.sqlite")
+            sparse.upsert_many(registry.all())
+            return IndexSnapshot(
+                registry, root, snapshot_id, identity, None, False, sparse, None,
+                "off", {}, directory, index_root,
+            )
+        except Exception:
+            if sparse is not None:
+                sparse.close()
+            _remove_generation(directory, index_root)
+            raise
     if previous is not None and previous.identity == identity:
         embedder, degraded = embedder_state or (previous.embedder, previous.embedder_degraded)
         cached = dict(previous.vectors)

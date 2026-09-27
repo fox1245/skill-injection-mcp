@@ -209,12 +209,6 @@ def test_negative_condition_can_be_semantically_supported():
     assert result.assessments["installer"].matched
 
 
-def test_default_does_not_enable_remote_verification_from_api_key_alone():
-    from skill_inject_mcp.config import Settings
-    settings = Settings(_env_file=None, OPENROUTER_API_KEY="test")
-    assert settings.verification_mode == "lexical"
-
-
 def test_source_fragments_preserve_complete_original_text():
     from skill_inject_mcp.retrieve.semantic import source_fragments
     s = skill().model_copy(update={"body": "First paragraph.\n" + "x" * 4000 + "\nDoes not support network access."})

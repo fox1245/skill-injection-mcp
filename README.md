@@ -264,12 +264,12 @@ pytest -q
 `.env.example` 파일을 `.env`로 복사합니다.
 
 ```env
-OPENROUTER_API_KEY=your_api_key
+SKILL_INJECT_OPENROUTER_API_KEY_FILE=/path/to/authorized/.env
 ```
 
-`.env` 파일은 Git에 커밋하지 않습니다.
+키는 승인된 Codex 설정의 `.env` 파일 경로를 재사용하고 값은 다른 설정이나 Git에 복사하지 않습니다.
 
-기본 hybrid 검색은 실제 `OpenRouterEmbedder`를 사용하며 API Key가 없으면 오류를 반환합니다. 키 없이 사용하는 별도의 lexical-only 설정은 아래 Offline Mode를 참고합니다. `SKILL_INJECT_USE_FAKE_EMBEDDER=true`는 테스트 전용입니다.
+기본 hybrid 검색과 semantic 검증은 실제 OpenRouter 임베딩/채팅을 사용하며 API Key가 없으면 오류를 반환합니다. 키 없이 사용하는 별도의 lexical-only 설정은 아래 Offline Mode를 참고합니다. `SKILL_INJECT_USE_FAKE_EMBEDDER=true`는 테스트 전용입니다. 기본 모드는 스킬 설명과 본문을 외부 API로 전송하므로 승인된 매니페스트만 사용하세요.
 
 공식 네이티브 라이브러리는 `python scripts/setup_sqlite_vector.py --output-dir .native`로 설치합니다. Windows에서는 `SKILL_INJECT_SQLITE_VECTOR_PATH`에 `vector.dll`의 절대 경로를 지정합니다. Python 휠이나 소스 빌드는 필요하지 않습니다. `SKILL_INJECT_OPENROUTER_API_KEY_FILE`에 승인된 `.env` 경로를 지정하면 다른 MCP와 같은 키 파일을 사용할 수 있습니다.
 
@@ -393,14 +393,15 @@ verification_degraded
 
 # Semantic Verification
 
-의미 기반 검증을 활성화하려면 명시적으로 설정해야 합니다.
+기본 설정은 `SKILL_INJECT_RETRIEVAL_MODE=hybrid`와 `SKILL_INJECT_VERIFICATION_MODE=semantic`입니다. 승인된 OpenRouter 키 파일과 native vector 라이브러리를 설정하세요.
 
 ```env
-SKILL_INJECT_VERIFICATION_MODE=semantic
+SKILL_INJECT_OPENROUTER_API_KEY_FILE=/path/to/authorized/.env
+SKILL_INJECT_SQLITE_VECTOR_PATH=/path/to/native/vector
 SKILL_INJECT_VERIFICATION_MODEL=openai/gpt-oss-120b
 ```
 
-API Key가 존재한다고 자동으로 Semantic Verification이 활성화되지는 않습니다.
+키나 원격 호출이 실패할 때 lexical 검증으로 조용히 전환하지 않습니다.
 
 Semantic Verification이 실패하면 결과는 `unknown`으로 처리됩니다.
 

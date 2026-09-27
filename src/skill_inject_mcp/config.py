@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     multi_query_model: str = "openai/gpt-oss-120b"
     multi_query_timeout_s: float = Field(default=MULTI_QUERY_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
 
-    verification_mode: Literal["semantic", "lexical"] = "lexical"
+    verification_mode: Literal["semantic", "lexical"] = "semantic"
     verification_model: str = "openai/gpt-oss-120b"
     verification_top_k: int = Field(default=5, ge=1, le=20)
     verification_timeout_s: float = Field(default=VERIFICATION_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)

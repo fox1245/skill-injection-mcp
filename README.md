@@ -541,7 +541,7 @@ SKILL_INJECT_EMBEDDING_BATCH_SIZE=32
 
 # Prompt Hook
 
-검색·검증은 필수 의존성인 `neograph-engine==0.12.1`의 네이티브 DAG에서 실행합니다.
+검색·검증은 필수 의존성인 `neograph-engine>=0.16.0`의 네이티브 DAG에서 실행합니다.
 `resolve_skills`의 `execution`에는 요구사항별 `retrieve → verify → bind` 실행 기록이 들어갑니다.
 훅은 `discover → validate_output`을 실행하고, 취소는 실제 비동기 HTTP 요청까지 전달합니다.
 NeoGraph 설치·로드 실패는 명시적인 오류이며 별도 실행기로 대체하지 않습니다.

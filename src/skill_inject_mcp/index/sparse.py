@@ -5,12 +5,12 @@ from contextlib import closing
 from pathlib import Path
 from urllib.parse import quote
 
-from skill_inject_mcp.text import words
+from skill_inject_mcp.text import concepts, words
 
 
 def _fts_query(raw: str) -> str:
-    """Build a safe FTS5 query from free text (OR of tokens)."""
-    toks = words(raw)
+    """Build a safe FTS5 query from free text (OR of raw words and normalized concepts)."""
+    toks = list(dict.fromkeys([*words(raw), *sorted(concepts(raw))]))
     cleaned: list[str] = []
     for t in toks:
         # quote tokens to avoid FTS syntax issues
@@ -59,9 +59,10 @@ class SparseIndex:
         tags: list[str] | None = None,
     ) -> None:
         self._conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill_id,))
+        extra = sorted(concepts(f"{name}\n{description}\n{body}") - set(words(" ".join(tags or []))))
         self._conn.execute(
             "INSERT INTO skills_fts(skill_id, name, description, body, tags) VALUES (?,?,?,?,?)",
-            (skill_id, name, description, body, " ".join(tags or [])),
+            (skill_id, name, description, body, " ".join([*(tags or []), *extra])),
         )
         self._conn.commit()
 
@@ -106,9 +107,10 @@ class SparseIndex:
         with self._conn:
             for skill in skills:
                 self._conn.execute("DELETE FROM skills_fts WHERE skill_id = ?", (skill.skill_id,))
+                extra = sorted(concepts(f"{skill.name}\n{skill.description}\n{skill.body}") - set(words(" ".join(skill.tags))))
                 self._conn.execute(
                     "INSERT INTO skills_fts(skill_id, name, description, body, tags) VALUES (?,?,?,?,?)",
-                    (skill.skill_id, skill.name, skill.description, skill.body, " ".join(skill.tags)),
+                    (skill.skill_id, skill.name, skill.description, skill.body, " ".join([*skill.tags, *extra])),
                 )
 
     def close(self) -> None:

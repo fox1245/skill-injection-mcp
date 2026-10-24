@@ -93,3 +93,43 @@ class Settings(BaseSettings):
 
 def get_settings(**overrides) -> Settings:
     return Settings(**overrides)
+
+
+def load_hook_settings(repo_root: Path | None = None) -> Settings:
+    """Load Settings anchored to repo_root regardless of the caller's working directory."""
+    import os
+    from dotenv import dotenv_values
+
+    anchor = (repo_root or Path(__file__).resolve().parents[2]).expanduser().resolve()
+    env_file = anchor / ".env"
+    raw_env = dotenv_values(env_file, interpolate=False) if env_file.is_file() else {}
+
+    def _has_cfg(key: str) -> bool:
+        prefixed = f"SKILL_INJECT_{key.upper()}"
+        return (
+            prefixed in os.environ
+            or prefixed in raw_env
+            or key.upper() in os.environ
+            or key.upper() in raw_env
+        )
+
+    overrides: dict[str, object] = {"_env_file": env_file if env_file.is_file() else None}
+    if not _has_cfg("persistent_embedding_cache"):
+        overrides["persistent_embedding_cache"] = True
+    if not _has_cfg("hook_timeout_s"):
+        overrides["hook_timeout_s"] = 4.0
+
+    settings = Settings(**overrides)
+
+    def _resolve_rel(p: Path | None) -> Path | None:
+        if p is None:
+            return None
+        expanded = p.expanduser()
+        return expanded if expanded.is_absolute() else (anchor / expanded).resolve()
+
+    settings.skills_dir = _resolve_rel(settings.skills_dir) or settings.skills_dir
+    settings.skill_manifest = _resolve_rel(settings.skill_manifest)
+    settings.index_dir = _resolve_rel(settings.index_dir) or settings.index_dir
+    settings.sqlite_vector_path = _resolve_rel(settings.sqlite_vector_path)
+    settings.openrouter_api_key_file = _resolve_rel(settings.openrouter_api_key_file)
+    return settings

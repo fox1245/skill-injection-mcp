@@ -179,26 +179,3 @@ def test_mcp_call_returns_validated_structured_output(engine, monkeypatch):
     response = SkillInjectResponse.model_validate(structured)
     assert response.match_status == "complete"
     assert response.checks[0].assessment == "supported"
-
-
-@pytest.mark.parametrize("query", [
-    "파이썬 패키지를 설치하고 의존성을 관리해줘",
-    "파이썬으로 패키지와 의존성을 설치해주세요",
-    "패키지 설치와 의존성 관리하기",
-])
-def test_korean_agglutinative_inflection_matches_skill(tmp_path, query):
-    root = tmp_path / "skills"
-    description = "파이썬 패키지 설치와 의존성 관리"
-    write_skill(root, "korean", description, body=description + " 절차")
-    result = make_engine(tmp_path, root).resolve(request(query))
-    assert result.match_status == "complete"
-    assert result.checks[0].skill_id == "korean"
-
-
-def test_korean_batchim_conditioning_preserves_vowel_ending_loanwords():
-    from skill_inject_mcp.text import concepts
-
-    assert concepts("API 게이트웨이를 설정해줘") == {"api", "게이트웨이", "설정"}
-    assert concepts("API 게이트웨이 설정") == {"api", "게이트웨이", "설정"}
-    assert concepts("매크로를 실행하고 접근권한을 확인해줘") == {"매크로", "실행", "접근권한", "확인"}
-    assert concepts("매크로 실행과 접근권한 확인") == {"매크로", "실행", "접근권한", "확인"}

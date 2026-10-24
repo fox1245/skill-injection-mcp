@@ -27,12 +27,11 @@ def _hit(skill_id: str, *, sparse=None, dense=None, ranking=0.1):
     return h
 
 
-def test_tokenize_drops_stopwords():
+def test_tokenize_splits_unicode_alphanumeric_without_hardcoded_stopwords():
     toks = tokenize("The origami paper folding ritual guide and 이것은")
-    assert "the" not in toks
-    assert "and" not in toks
     assert "origami" in toks
     assert "paper" in toks
+    assert "이것은" in toks
 
 
 def test_origami_like_no_lexical_against_bm25():

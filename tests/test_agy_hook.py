@@ -100,3 +100,29 @@ def test_handle_pre_invocation_discovers_skills_from_unrelated_cwd(
     assert "injectSteps" in out
     msg = out["injectSteps"][0]["ephemeralMessage"]
     assert "ko-pkg-manager" in msg
+
+
+def test_handle_pre_invocation_preserves_candidates_whose_description_contains_empty_brackets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    mod = _load_agy_hook_module()
+    fake_repo = tmp_path / "repo"
+    skill_md = fake_repo / "skills" / "array-parser" / "SKILL.md"
+    skill_md.parent.mkdir(parents=True)
+    skill_md.write_text(
+        "---\nname: array-parser\ndescription: Parse JSON [] arrays in Python\n---\n"
+        "Parse JSON [] arrays in Python.\n",
+        encoding="utf-8",
+    )
+    (fake_repo / ".env").write_text(
+        "SKILL_INJECT_SKILLS_DIR=skills\n"
+        "SKILL_INJECT_INDEX_DIR=.idx\n"
+        "SKILL_INJECT_USE_FAKE_EMBEDDER=true\n"
+        "SKILL_INJECT_MULTI_QUERY=false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    settings = load_hook_settings(fake_repo)
+    out = mod.handle_pre_invocation({"lastUserInput": "Parse JSON [] arrays in Python"}, settings=settings)
+    assert "injectSteps" in out
+    assert "array-parser" in out["injectSteps"][0]["ephemeralMessage"]

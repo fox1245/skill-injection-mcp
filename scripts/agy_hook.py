@@ -29,6 +29,9 @@ ACKNOWLEDGEMENTS = frozenset({
     "ㄱㄱ", "ㅇㅇ", "ㅇㅋ", "ㄳ", "ㅎㅎ", "ㅋㅋㅋㅋ", "proceed", "continue", "next", "done",
 })
 _USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
+_SAFE_SKILL_ID_RE = re.compile(r"[^A-Za-z0-9_.:/-]+")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_MAX_TRANSCRIPT_TAIL_BYTES = 65536
 
 
 def _strip_user_request_tags(text: str) -> str:
@@ -36,6 +39,20 @@ def _strip_user_request_tags(text: str) -> str:
     if match:
         return match.group(1).strip()
     return text.strip()
+
+
+def _read_transcript_tail_lines(path: Path) -> list[str]:
+    if path.suffix != ".jsonl" or path.is_symlink() or not path.is_file():
+        return []
+    with path.open("rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        offset = max(0, size - _MAX_TRANSCRIPT_TAIL_BYTES)
+        f.seek(offset, os.SEEK_SET)
+        raw = f.read()
+    text = raw.decode("utf-8", errors="ignore")
+    lines = text.splitlines()
+    return lines[1:] if offset > 0 and len(lines) > 1 else lines
 
 
 def _extract_prompt(payload: dict) -> str:
@@ -47,17 +64,20 @@ def _extract_prompt(payload: dict) -> str:
                 return stripped
 
     transcript_path = payload.get("transcriptPath")
-    if transcript_path and Path(transcript_path).is_file():
+    if isinstance(transcript_path, str) and transcript_path.strip():
         try:
-            with open(transcript_path, "r", encoding="utf-8", errors="ignore") as f:
-                lines = f.readlines()
+            lines = _read_transcript_tail_lines(Path(transcript_path))
             for line in reversed(lines):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     record = json.loads(line)
-                    if record.get("type") == "USER_INPUT":
+                    if (
+                        isinstance(record, dict)
+                        and record.get("type") == "USER_INPUT"
+                        and record.get("source") in (None, "USER_EXPLICIT")
+                    ):
                         content = record.get("content", "")
                         if isinstance(content, str) and content.strip():
                             stripped = _strip_user_request_tags(content)
@@ -69,6 +89,10 @@ def _extract_prompt(payload: dict) -> str:
             pass
 
     return ""
+
+
+def _sanitize_inline(text: str) -> str:
+    return _CONTROL_RE.sub(" ", text).replace("`", "'").strip()
 
 
 def handle_pre_invocation(payload: dict, *, settings=None, engine=None) -> dict:
@@ -92,7 +116,7 @@ def handle_pre_invocation(payload: dict, *, settings=None, engine=None) -> dict:
         hook_resp = prompt_context(engine, prompt)
 
         context_text = hook_resp.get("hookSpecificOutput", {}).get("additionalContext", "")
-        if not context_text or "[]" in context_text:
+        if not context_text:
             return {}
 
         lines = context_text.split("\n")
@@ -101,8 +125,10 @@ def handle_pre_invocation(payload: dict, *, settings=None, engine=None) -> dict:
             line_str = line.strip()
             if line_str.startswith("[") and line_str.endswith("]"):
                 try:
-                    candidates = json.loads(line_str)
-                    break
+                    parsed = json.loads(line_str)
+                    if isinstance(parsed, list):
+                        candidates = parsed
+                        break
                 except Exception:
                     continue
 
@@ -111,11 +137,17 @@ def handle_pre_invocation(payload: dict, *, settings=None, engine=None) -> dict:
 
         out_lines = ["[Skill Injection MCP: Discovered Skills]"]
         for c in candidates[:3]:
-            sid = c.get("skill_id", "")
-            desc = c.get("description", "").replace("\n", " ").strip()
+            if not isinstance(c, dict):
+                continue
+            sid = _SAFE_SKILL_ID_RE.sub("", str(c.get("skill_id", "")))
+            desc = _sanitize_inline(str(c.get("description", "")))
+            if not sid:
+                continue
             if len(desc) > 160:
                 desc = desc[:157] + "..."
             out_lines.append(f"  • `{sid}`: {desc}")
+        if len(out_lines) == 1:
+            return {}
         out_lines.append(
             "If relevant, use `get_skill_body(skill_id)` to load instructions, "
             "or `resolve_skills` for full verification."

@@ -200,3 +200,5 @@ def test_korean_batchim_conditioning_preserves_vowel_ending_loanwords():
 
     assert concepts("API 게이트웨이를 설정해줘") == {"api", "게이트웨이", "설정"}
     assert concepts("API 게이트웨이 설정") == {"api", "게이트웨이", "설정"}
+    assert concepts("매크로를 실행하고 접근권한을 확인해줘") == {"매크로", "실행", "접근권한", "확인"}
+    assert concepts("매크로 실행과 접근권한 확인") == {"매크로", "실행", "접근권한", "확인"}

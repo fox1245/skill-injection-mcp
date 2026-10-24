@@ -16,21 +16,22 @@ make made please skill skills implement implementing implementation locate find
 및 또는 은 는 을 를 에 의 가 와 과 도 으로 로 에서 하다 해줘 해주세요 해봐
 """.split())
 
-# Ordered longest-first so compound verbal/request endings strip before single-char particles.
+# Ordered longest-first. Ambiguous 1-syllable noun endings (로, 도, 만, 한, 할) are
+# intentionally excluded so nouns like 매크로, 접근권한, 해상도 stay intact.
 _KO_SUFFIXES = (
     "해주세요", "해주기", "해줘요", "해줘", "해봐요", "해봐",
     "하면서", "하거나", "하려고", "하려면", "하니까", "하지만",
-    "합니다", "입니다", "습니다", "했다", "한다", "하는", "하기", "하고", "하며", "해서", "하면", "할", "한",
+    "합니다", "입니다", "습니다", "했다", "한다", "하는", "하기", "하고", "하며", "해서", "하면",
     "으로부터", "로부터", "에서부터", "에게서", "한테서", "이라도", "라든지",
     "으로", "에서", "에게", "한테", "보다", "처럼", "까지", "부터", "마다", "조차", "마저", "밖에", "대로",
-    "은", "는", "이", "가", "을", "를", "와", "과", "의", "에", "로", "도", "만",
+    "은", "는", "이", "가", "을", "를", "와", "과", "의", "에",
 )
 # Particles that grammatically attach only after a closed syllable (batchim != 0).
 _KO_BATCHIM_REQUIRED = frozenset({"은", "이", "을", "과", "으로", "으로부터", "이라도"})
 # Particles that grammatically attach only after an open syllable (batchim == 0).
 _KO_OPEN_REQUIRED = frozenset({"는", "가", "를", "와"})
 # Particles that attach after an open syllable (batchim == 0) or rieul batchim (batchim == 8).
-_KO_OPEN_OR_RIEUL_REQUIRED = frozenset({"로", "로부터"})
+_KO_OPEN_OR_RIEUL_REQUIRED = frozenset({"로부터"})
 
 
 def _hangul_batchim(ch: str) -> int:

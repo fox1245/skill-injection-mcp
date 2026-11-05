@@ -93,11 +93,12 @@ lexical은 오프라인 폴백이며 교차언어 의미 지원을 증명하지 
 
 ## 스킬 계층 (meta vs domain)
 
-스킬-에-대한-스킬(작성·설치·검사·유지·카탈로그)은 별도 메타 계층입니다. 도메인 작업은 도메인 계층을 먼저 검색합니다.
-분류는 frontmatter layer(meta|domain), 알려진 meta 스킬 ID, 보수적 설명 휴리스틱 순서입니다.
+스킬-에-대한-스킬(작성·설치·검사·유지·카탈로그)은 별도 메타 계층입니다. 계층은 선언으로만 결정됩니다.
+스킬은 frontmatter `layer: meta|domain`을 선언하고(없으면 domain), 요구사항은 선택 필드 `layer`로 원하는 계층을 선언합니다.
+요구사항이 계층을 선언하면 그 계층의 후보를 먼저 검색하고, 선언하지 않으면 계층별로 나누지 않습니다.
 메타 스킬 매칭이 도메인 작업 커버리지를 의미하지 않습니다.
-canonical 메타 스킬: `agentx-codex-conductor`, `skill-inspector`, `skill-creator`, `skill-installer`, `skills-maintain`, `find-skills`.
-orchestration 요구는 도메인 스킬이 아닌 메타 계층에서 해결해야 합니다.
+canonical 메타 스킬(`agentx-codex-conductor`, `skill-inspector`, `skill-creator`, `skill-installer`, `skills-maintain`, `find-skills`)은 frontmatter에 `layer: meta`를 선언해야 합니다.
+orchestration 요구는 도메인 스킬이 아닌 메타 계층(`layer: meta`)에서 해결해야 합니다.
 
 ## 테스트
 

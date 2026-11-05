@@ -497,6 +497,14 @@ qwen/qwen3-embedding-8b
 
 동일한 임베딩 서버를 공유하는 여러 설치 환경에서 `embedding_queue_dir` (`SKILL_INJECT_EMBEDDING_QUEUE_DIR`)을 같은 디렉터리로 지정하면 모든 설치가 하나의 큐를 공유합니다.
 
+큐를 공유하는 모든 프로세스는 같은 `embedding_max_concurrency` 값을 사용해야 합니다. 서버의 `Retry-After`는 최소 대기 시간입니다(지수 백오프와 둘 중 큰 값, 지터는 더하기만 함). `Retry-After`가 `embedding_retry_max_wait_s`를 넘으면 일찍 재시도하지 않고 호출이 포기합니다. 마감 시간이 있는 호출(hook)은 남은 시간으로 대기를 감당할 수 없으면 요청을 보내지 않고 실패합니다.
+
+## 인덱스 빌드 잠금과 세대 정리
+
+* 같은 `index_dir`을 쓰는 모든 프로세스에서 인덱스 빌드는 `index_dir/build.lock` 배타 잠금 아래에서 한 번에 하나만 실행됩니다(대기 시간 `SKILL_INJECT_INDEX_LOCK_TIMEOUT_S`). 나중에 들어온 프로세스는 영구 캐시에서 벡터를 읽습니다.
+* 각 `snapshot-*` 디렉터리는 사용 중인 프로세스가 잡고 있는 `lease.lock`을 가집니다. 빌드 잠금 아래에서 시작 시 한 번, 어떤 프로세스도 lease를 잡고 있지 않은 세대(또는 lease 파일이 없는 이전 버전의 세대)를 삭제합니다. 이전 버전 프로세스가 아직 실행 중이면 먼저 종료하세요.
+* 채팅 호출(멀티쿼리 확장, semantic 검증)은 `chat_base_url`/`chat_api_key`만 사용하며 더 이상 `embedding_base_url`로 가지 않습니다. 임베딩 서버가 채팅도 제공하던 설정은 `SKILL_INJECT_CHAT_BASE_URL`을 지정해야 합니다.
+
 ---
 
 # Offline Mode

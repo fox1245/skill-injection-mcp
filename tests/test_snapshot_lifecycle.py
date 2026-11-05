@@ -201,6 +201,10 @@ def test_startup_sweep_removes_only_orphans(tmp_path: Path) -> None:
             time.sleep(0.02)
         proc.kill()
         proc.wait(timeout=10)
+        # Some platforms release a terminated process's locks a moment later: wait until the lease is free.
+        probe = FileLock(killed_dir / "lease.lock")
+        probe.acquire(timeout_s=10.0, poll_s=0.05)
+        probe.release()
     finally:
         if proc.poll() is None:
             proc.kill()

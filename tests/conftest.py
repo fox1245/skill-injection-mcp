@@ -40,12 +40,21 @@ def offline_tests(monkeypatch):
     monkeypatch.setenv("SKILL_INJECT_MULTI_QUERY", "false")
     monkeypatch.setenv("SKILL_INJECT_VERIFICATION_MODE", "lexical")
 
-    def deny_network(*args, **kwargs):
+    real_handle_request = httpx.HTTPTransport.handle_request
+    real_handle_async_request = httpx.AsyncHTTPTransport.handle_async_request
+
+    def deny_network(self, request, *args, **kwargs):
+        if getattr(getattr(request, "url", None), "host", None) == "127.0.0.1":
+            return real_handle_request(self, request, *args, **kwargs)
         raise AssertionError("Tests must use httpx.MockTransport, not real HTTP")
 
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", deny_network)
-    async def deny_async_network(*args, **kwargs):
+
+    async def deny_async_network(self, request, *args, **kwargs):
+        if getattr(getattr(request, "url", None), "host", None) == "127.0.0.1":
+            return await real_handle_async_request(self, request, *args, **kwargs)
         raise AssertionError("Tests must use httpx.MockTransport, not real async HTTP")
+
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", deny_async_network)
 
 

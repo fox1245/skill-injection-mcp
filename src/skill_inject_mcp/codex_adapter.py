@@ -6,12 +6,13 @@ import asyncio
 import queue
 import subprocess
 import threading
+import time
 from pathlib import Path
 
+from skill_inject_mcp.embed.admission import EmbeddingUnavailable
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import reciprocal_rank_fusion
 from skill_inject_mcp.retrieve.checks import lexical_gate
-from skill_inject_mcp.registry.layer import classify_requirement_layer
 from skill_inject_mcp.neograph_runtime import run_async_stages
 
 
@@ -112,17 +113,15 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
     loop = asyncio.get_running_loop()
     deadline = loop.time() + engine.settings.hook_timeout_s
     stripped = prompt.strip()
-    acknowledgements = {"", "네", "응", "좋아", "고마워", "감사합니다", "ok", "okay", "thanks", "yes", "no"}
-    if stripped.casefold().rstrip(".! ") in acknowledgements:
+    if not stripped:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": ""}}
     snapshot = None
     try:
         snapshot = engine.acquire_hook_snapshot()
         if snapshot is None:
-            engine.request_background_refresh()
             if engine._last_refresh_error:
                 return _hook_result([], f"unavailable; catalog refresh failed ({engine._last_refresh_error})")
-            return _hook_result([], "unavailable; index warmup requested")
+            return _hook_result([], "unavailable; no published index snapshot is ready")
         catalog = engine.hook_catalog_state(snapshot)
         width = engine.settings.retrieve_top_k
         sparse = snapshot.sparse.search_readonly(stripped, top_k=width)
@@ -133,13 +132,18 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
         remaining = deadline - loop.time() - min(.05, engine.settings.hook_timeout_s * .1)
         if remaining > 0 and snapshot.embedder is not None:
             try:
-                vector = (await asyncio.wait_for(snapshot.embedder.aembed_queries([stripped]), remaining))[0]
+                call_deadline = time.monotonic() + remaining
+                vector = (await asyncio.wait_for(
+                    snapshot.embedder.aembed_queries([stripped], deadline=call_deadline), remaining,
+                ))[0]
                 dense = snapshot.dense.search_readonly(vector, top_k=width)
                 hits = reciprocal_rank_fusion(dense, sparse, k=engine.settings.rrf_k)
                 selected = [hit.skill_id for hit in hits[:3]]
                 status = "hybrid (query cache or live embedding)"
             except asyncio.TimeoutError:
                 pass
+            except EmbeddingUnavailable as exc:
+                status = f"BM25-only fallback (embedding unavailable: {exc.reason})"
             except Exception as exc:
                 status = f"BM25-only fallback (embedding unavailable: {type(exc).__name__})"
         if status.startswith("BM25-only"):
@@ -157,13 +161,6 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
             skill = snapshot.registry.get(skill_id)
             if skill is not None:
                 candidates.append({"skill_id": skill.skill_id, "description": skill.description[:400]})
-        wanted = classify_requirement_layer(stripped)
-        layered = [
-            item for item in candidates
-            if (skill := snapshot.registry.get(item["skill_id"])) is not None and skill.layer == wanted
-        ]
-        if layered:
-            candidates = layered
         # Source files may have changed while the embedding request was in flight.
         catalog = engine.hook_catalog_state(snapshot)
         return _hook_result(candidates, status, catalog, snapshot.snapshot_id)

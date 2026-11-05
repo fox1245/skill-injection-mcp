@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import tempfile
 from dataclasses import dataclass, field
@@ -12,7 +13,9 @@ from threading import Lock
 import numpy as np
 
 from skill_inject_mcp.config import Settings
+from skill_inject_mcp.embed.admission import build_admission
 from skill_inject_mcp.embed.embedder import Embedder, build_embedder
+from skill_inject_mcp.index.locks import FileLock
 from skill_inject_mcp.index.sparse import SparseIndex
 from skill_inject_mcp.index.cache import EmbeddingCache
 from skill_inject_mcp.index.vector import VectorIndex, build_vector_index
@@ -28,6 +31,13 @@ def embedding_identity(settings: Settings) -> tuple:
     )
 
 
+def index_identity(settings: Settings) -> tuple:
+    base = embedding_identity(settings)
+    if settings.retrieval_mode == "lexical":
+        return base
+    return (base, ("summary_chars", settings.index_summary_chars))
+
+
 def fingerprint(registry: SkillRegistry, root: Path, identity: tuple) -> str:
     data = {
         "root": str(root.resolve()), "embedding": identity,
@@ -37,12 +47,81 @@ def fingerprint(registry: SkillRegistry, root: Path, identity: tuple) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+GENERATION_PREFIX = "snapshot-"
+LEASE_NAME = "lease.lock"
+BUILD_LOCK_NAME = "build.lock"
+
+
 def _remove_generation(directory: Path, index_root: Path) -> None:
     # Never recursively delete caller-supplied paths. Only our generated child.
     target, parent = directory.resolve(), index_root.resolve()
-    if target.parent != parent or not target.name.startswith("snapshot-"):
+    if target.parent != parent or not target.name.startswith(GENERATION_PREFIX):
         raise ValueError("Refusing to remove a path outside the managed index generation")
-    shutil.rmtree(target)
+    try:
+        shutil.rmtree(target)
+    except FileNotFoundError:
+        # Another process removed the same unleased generation first; the goal is met.
+        pass
+
+
+def _discard_generation(directory: Path, index_root: Path, lease: FileLock, *closables) -> None:
+    """Best-effort cleanup of a generation that was never published; never masks the caller's error."""
+    for closable in closables:
+        if closable is not None:
+            try:
+                closable.close()
+            except Exception:
+                pass
+    lease.release()
+    try:
+        if directory.exists():
+            _remove_generation(directory, index_root)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Index generation cleanup failed (%s)", type(exc).__name__,
+        )
+
+
+def _create_generation(index_root: Path) -> tuple[Path, FileLock]:
+    root = Path(index_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    directory = Path(tempfile.mkdtemp(prefix=GENERATION_PREFIX, dir=root))
+    lease = FileLock(directory / LEASE_NAME)
+    try:
+        if not lease.try_acquire():
+            raise RuntimeError(f"Could not acquire lease for index generation: {directory}")
+        return directory, lease
+    except BaseException:
+        _discard_generation(directory, root, lease)
+        raise
+
+
+def sweep_orphan_generations(index_root: Path, build_lock: FileLock) -> list[str]:
+    root = Path(index_root).resolve()
+    if build_lock is None or not build_lock.held or build_lock.path.resolve() != root / BUILD_LOCK_NAME:
+        raise RuntimeError("sweep_orphan_generations requires the held build lock of this index directory")
+    if not root.is_dir():
+        return []
+    removed: list[str] = []
+    for entry in sorted(root.iterdir(), key=lambda p: p.name):
+        if not entry.name.startswith(GENERATION_PREFIX) or entry.is_symlink() or not entry.is_dir():
+            continue
+        lease_path = entry / LEASE_NAME
+        try:
+            if lease_path.exists():
+                probe = FileLock(lease_path)
+                try:
+                    if not probe.try_acquire():
+                        continue
+                finally:
+                    probe.release()
+            _remove_generation(entry, root)
+            removed.append(entry.name)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Orphan index generation cleanup failed (%s)", type(exc).__name__,
+            )
+    return removed
 
 
 @dataclass
@@ -60,6 +139,7 @@ class IndexSnapshot:
     directory: Path
     index_root: Path
     source_signature: tuple | None = None
+    lease: FileLock | None = None
     _lease_lock: Lock = field(default_factory=Lock, repr=False)
     _leases: int = field(default=0, repr=False)
     _retired: bool = field(default=False, repr=False)
@@ -107,11 +187,17 @@ class IndexSnapshot:
             self._dispose()
 
     def _dispose(self) -> None:
-        self.sparse.close()
-        if self.dense is not None:
-            self.dense.close()
-        if self.directory.exists():
-            _remove_generation(self.directory, self.index_root)
+        try:
+            self.sparse.close()
+        finally:
+            try:
+                if self.dense is not None:
+                    self.dense.close()
+            finally:
+                if self.lease is not None:
+                    self.lease.release()
+                if self.directory.exists():
+                    _remove_generation(self.directory, self.index_root)
 
 
 def build_snapshot(
@@ -119,55 +205,68 @@ def build_snapshot(
     previous: IndexSnapshot | None,
     *, embedder_state: tuple[Embedder, bool] | None = None,
 ) -> IndexSnapshot:
-    identity = embedding_identity(settings)
+    identity = index_identity(settings)
     if settings.retrieval_mode == "lexical":
         index_root = Path(settings.index_dir).resolve()
-        index_root.mkdir(parents=True, exist_ok=True)
-        directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=index_root))
+        directory, lease = _create_generation(index_root)
         sparse = None
         try:
             sparse = SparseIndex(directory / "sparse.sqlite")
             sparse.upsert_many(registry.all())
             return IndexSnapshot(
                 registry, root, snapshot_id, identity, None, False, sparse, None,
-                "off", {}, directory, index_root,
+                "off", {}, directory, index_root, lease=lease,
             )
-        except Exception:
-            if sparse is not None:
-                sparse.close()
-            _remove_generation(directory, index_root)
+        except BaseException:
+            _discard_generation(directory, index_root, lease, sparse)
             raise
     if previous is not None and previous.identity == identity:
         embedder, degraded = embedder_state or (previous.embedder, previous.embedder_degraded)
         cached = dict(previous.vectors)
     else:
         embedder, degraded = embedder_state or build_embedder(
-            api_key=settings.resolve_api_key(), use_fake=settings.use_fake_embedder,
-            model=settings.embedding_model, dim=settings.embedding_dim,
-            base_url=settings.embedding_base_url, timeout_s=settings.embedding_timeout_s,
+            api_key=settings.resolve_embedding_api_key(),
+            use_fake=settings.use_fake_embedder,
+            model=settings.embedding_model,
+            dim=settings.embedding_dim,
+            base_url=settings.embedding_base_url,
+            timeout_s=settings.embedding_timeout_s,
+            connect_timeout_s=settings.http_connect_timeout_s,
+            write_timeout_s=settings.http_write_timeout_s,
+            pool_timeout_s=settings.http_pool_timeout_s,
             query_cache_size=settings.query_cache_size,
+            admission=None if settings.use_fake_embedder else build_admission(settings),
         )
         cached = {}
     skills = registry.all()
+    summary_chars = settings.index_summary_chars
     documents = {
-        s.skill_id: f"{s.name}\n{s.description}\n{s.body}\n{' '.join(s.tags)}"
+        s.skill_id: f"{s.name}\n{s.description}\n{s.body[:summary_chars]}\n{' '.join(s.tags)}"
         for s in skills
     }
     hashes = {sid: hashlib.sha256(text.encode()).hexdigest() for sid, text in documents.items()}
-    disk_cache = EmbeddingCache(Path(settings.index_dir), identity, settings.embedding_dim) if settings.persistent_embedding_cache else None
-    pending = {}
+    disk_cache = (
+        EmbeddingCache(Path(settings.index_dir), embedding_identity(settings), settings.embedding_dim)
+        if settings.persistent_embedding_cache else None
+    )
     vectors = {}
+    missing_sids = []
     for sid, digest in hashes.items():
         if digest in cached:
             vectors[digest] = cached[digest]
         else:
-            stored = disk_cache.get(digest) if disk_cache else None
-            if stored is not None:
-                vectors[digest] = stored
-            else:
-                pending[digest] = documents[sid]
+            missing_sids.append(sid)
+    if missing_sids and disk_cache is not None:
+        stored = disk_cache.get_many([hashes[sid] for sid in missing_sids])
+        vectors.update(stored)
+    pending = {}
+    for sid in missing_sids:
+        digest = hashes[sid]
+        if digest not in vectors:
+            pending[digest] = documents[sid]
     # Complete remote work before creating or touching any live index files.
     items = list(pending.items())
+    newly_embedded: dict[str, np.ndarray] = {}
     for offset in range(0, len(items), settings.embedding_batch_size):
         batch = items[offset:offset + settings.embedding_batch_size]
         embedded = embedder.embed_documents([text for _, text in batch])
@@ -177,13 +276,16 @@ def build_snapshot(
             array = np.asarray(vector, dtype=np.float64)
             if array.shape != (settings.embedding_dim,) or not np.isfinite(array).all():
                 raise ValueError("Embedding response has invalid shape or non-finite values")
-            vectors[digest] = array.copy()
-            if disk_cache is not None:
-                disk_cache.put(digest, vectors[digest])
+            copied = array.copy()
+            vectors[digest] = copied
+            newly_embedded[digest] = copied
+        if disk_cache is not None:
+            # Persist each batch as soon as it is paid for, so a later failure keeps the finished work.
+            disk_cache.put_many(newly_embedded)
+            newly_embedded = {}
 
     index_root = Path(settings.index_dir).resolve()
-    index_root.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=index_root))
+    directory, lease = _create_generation(index_root)
     sparse = dense = None
     try:
         dense, backend = build_vector_index(directory, dim=settings.embedding_dim,
@@ -193,12 +295,8 @@ def build_snapshot(
         dense.upsert_many([(s.skill_id, vectors[hashes[s.skill_id]]) for s in skills])
         return IndexSnapshot(
             registry, root, snapshot_id, identity, embedder, degraded, sparse, dense,
-            backend, vectors, directory, index_root,
+            backend, vectors, directory, index_root, lease=lease,
         )
-    except Exception:
-        if sparse is not None:
-            sparse.close()
-        if dense is not None:
-            dense.close()
-        _remove_generation(directory, index_root)
+    except BaseException:
+        _discard_generation(directory, index_root, lease, sparse, dense)
         raise

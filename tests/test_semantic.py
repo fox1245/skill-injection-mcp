@@ -5,11 +5,13 @@ import json
 import httpx
 import pytest
 
+from skill_inject_mcp.config import Settings
 from skill_inject_mcp.retrieve.semantic import SemanticVerifier
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta
 
 DESCRIPTION = "Install Python packages and project dependencies with pip or uv."
 KOREAN = "pip으로 파이썬 프로젝트의 의존성 패키지를 설치한다."
+_DEFAULTS = Settings(_env_file=None)
 
 
 def skill():
@@ -33,13 +35,27 @@ def response(results, finish_reason="stop"):
     }]})
 
 
+def _verify(verifier: SemanticVerifier, requirement: str, candidates: list[SkillMeta], **kwargs):
+    defaults = {
+        "model": _DEFAULTS.verification_model,
+        "base_url": _DEFAULTS.chat_base_url,
+        "timeout_s": _DEFAULTS.verification_timeout_s,
+        "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+        "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+        "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+        "provider_order": _DEFAULTS.chat_provider_order,
+    }
+    defaults.update(kwargs)
+    return verifier.verify(requirement, candidates, **defaults)
+
+
 def test_cross_language_support_uses_original_and_source_quotes():
     seen = []
     def transport(req):
         seen.append(json.loads(req.content))
         return response([verdict()])
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        result = SemanticVerifier().verify(KOREAN, [skill()], api_key="test", client=client)
+        result = _verify(SemanticVerifier(), KOREAN, [skill()], api_key="test", client=client)
     assessment = result.assessments["installer"]
     assert assessment.matched
     assert assessment.assessment == "supported"
@@ -57,8 +73,8 @@ def test_cross_language_support_uses_original_and_source_quotes():
 def test_non_supported_never_becomes_matched(assessment):
     v = verdict(assessment=assessment, unmet=["Vector search is not supported"])
     with httpx.Client(transport=httpx.MockTransport(lambda req: response([v]))) as client:
-        result = SemanticVerifier().verify("Install packages and implement vector search", [skill()],
-                                          api_key="test", client=client)
+        result = _verify(SemanticVerifier(), "Install packages and implement vector search", [skill()],
+                         api_key="test", client=client)
     assert not result.degraded
     assert not result.assessments["installer"].matched
     assert result.assessments["installer"].assessment == assessment
@@ -91,7 +107,7 @@ def test_invalid_verdicts_fail_closed(defect):
         v["confidence"] = 1.0
     with httpx.Client(transport=httpx.MockTransport(lambda req: response(results))) as client:
         verifier = SemanticVerifier()
-        result = verifier.verify(KOREAN, [skill()], api_key="test", client=client)
+        result = _verify(verifier, KOREAN, [skill()], api_key="test", client=client)
     assert result.degraded
     assert not result.assessments["installer"].matched
     assert result.assessments["installer"].assessment == "unknown"
@@ -111,13 +127,13 @@ def test_transport_or_parse_errors_are_unknown(failure):
             return httpx.Response(200, json={"choices": ["not an object"]})
         return response([verdict()], finish_reason="length")
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
-        result = SemanticVerifier().verify(KOREAN, [skill()], api_key="test", client=client)
+        result = _verify(SemanticVerifier(), KOREAN, [skill()], api_key="test", client=client)
     assert result.degraded
     assert not result.assessments["installer"].matched
 
 
 def test_missing_api_key_does_not_certify_support():
-    result = SemanticVerifier().verify(DESCRIPTION, [skill()], api_key=None)
+    result = _verify(SemanticVerifier(), DESCRIPTION, [skill()], api_key=None)
     assert result.degraded
     assert result.reason == "no_api_key"
     assert not result.assessments["installer"].matched
@@ -125,7 +141,7 @@ def test_missing_api_key_does_not_certify_support():
 
 def test_oversized_source_is_not_silently_truncated():
     s = skill().model_copy(update={"body": "x" * 1000 + "\nDoes not install packages."})
-    result = SemanticVerifier().verify(KOREAN, [s], api_key="test", max_source_chars=100)
+    result = _verify(SemanticVerifier(), KOREAN, [s], api_key="test", max_source_chars=100)
     assert result.degraded
     assert not result.assessments["installer"].matched
     assert result.assessments["installer"].reason == "semantic_source_limit_exceeded"
@@ -144,12 +160,12 @@ def test_cache_keys_include_original_requirement_source_and_model():
     verifier = SemanticVerifier()
     with httpx.Client(transport=httpx.MockTransport(transport)) as client:
         kwargs = {"api_key": "test", "client": client}
-        verifier.verify(KOREAN, [skill()], **kwargs)
-        verifier.verify(KOREAN, [skill()], **kwargs)
+        _verify(verifier, KOREAN, [skill()], **kwargs)
+        _verify(verifier, KOREAN, [skill()], **kwargs)
         assert len(seen) == 1
-        verifier.verify("Install dependencies", [skill()], **kwargs)
-        verifier.verify(KOREAN, [skill().model_copy(update={"body": "New implementation"})], **kwargs)
-        verifier.verify(KOREAN, [skill()], model="different-model", **kwargs)
+        _verify(verifier, "Install dependencies", [skill()], **kwargs)
+        _verify(verifier, KOREAN, [skill().model_copy(update={"body": "New implementation"})], **kwargs)
+        _verify(verifier, KOREAN, [skill()], model="different-model", **kwargs)
     assert len(seen) == 4
 
 
@@ -204,8 +220,8 @@ def test_negative_condition_can_be_semantically_supported():
         "description": "Install Python packages from a local wheel cache without network access.",
     })
     with httpx.Client(transport=httpx.MockTransport(lambda req: response([verdict(s)]))) as client:
-        result = SemanticVerifier().verify("네트워크 없이 로컬 패키지를 설치한다.", [s],
-                                          api_key="test", client=client)
+        result = _verify(SemanticVerifier(), "네트워크 없이 로컬 패키지를 설치한다.", [s],
+                         api_key="test", client=client)
     assert result.assessments["installer"].matched
 
 

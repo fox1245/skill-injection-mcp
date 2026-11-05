@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -8,7 +8,7 @@ import httpx
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever, reciprocal_rank_fusion
-from skill_inject_mcp.retrieve.multi_query import expand_queries
+from skill_inject_mcp.retrieve.multi_query import _parse_queries, expand_queries
 from skill_inject_mcp.schemas import (
     Constraints,
     MatchStatus,
@@ -18,10 +18,25 @@ from skill_inject_mcp.schemas import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures" / "skills"
+_DEFAULTS = Settings(_env_file=None)
+
+
+def _expand(*args, **kwargs):
+    defaults = {
+        "model": _DEFAULTS.multi_query_model,
+        "base_url": _DEFAULTS.chat_base_url,
+        "timeout_s": _DEFAULTS.multi_query_timeout_s,
+        "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+        "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+        "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+        "provider_order": _DEFAULTS.chat_provider_order,
+    }
+    defaults.update(kwargs)
+    return expand_queries(*args, **defaults)
 
 
 def test_expand_queries_no_key_returns_original_only():
-    mq = expand_queries(
+    mq = _expand(
         "Install Python packages with pip",
         None,
         api_key=None,
@@ -33,7 +48,7 @@ def test_expand_queries_no_key_returns_original_only():
 
 
 def test_expand_queries_disabled_returns_original():
-    mq = expand_queries(
+    mq = _expand(
         "BM25 sparse search",
         "FTS5PorterTokenXyz",
         api_key="sk-test",
@@ -59,7 +74,7 @@ def test_expand_queries_mock_llm_merges_original_first():
         )
     )
     client = httpx.Client(transport=transport)
-    mq = expand_queries(
+    mq = _expand(
         "Install Python packages with pip",
         None,
         api_key="sk-test",
@@ -78,7 +93,7 @@ def test_expand_queries_timeout_degrades():
         raise httpx.TimeoutException("slow", request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(_raise))
-    mq = expand_queries(
+    mq = _expand(
         "Install packages",
         None,
         api_key="sk-test",
@@ -180,3 +195,35 @@ def test_custom_top_k_changes_evidence_width(tmp_path: Path):
     default_ev = [e for e in default.evidence if e.requirement_id == "r"]
     assert len(default_ev) <= 5
     assert len(default_ev) >= len(narrow_ev)
+
+
+def test_parse_queries_raw_decode_cases():
+    # 1. Fenced JSON
+    fenced = '```json\n["pip install", "python packaging", "uv add"]\n```'
+    assert _parse_queries(fenced) == ["pip install", "python packaging", "uv add"]
+
+    # 2. Prose around the array
+    prose = 'Here are the expanded queries:\n["bm25 sparse search", "sqlite fts5"]\nHope this helps!'
+    assert _parse_queries(prose) == ["bm25 sparse search", "sqlite fts5"]
+
+    # 3. Decodable object that is not a list (ignored when no string list is present; skipped when followed by a list)
+    assert _parse_queries('{"status": "ok", "count": 2}') == []
+    assert _parse_queries('{"meta": [1, 2, 3]} ["first query", "second query"]') == [
+        "first query",
+        "second query",
+    ]
+
+    # 4. Nested brackets inside prose before the array
+    nested_prose = 'Context [see section [2] and [draft [a]]]: ["vector search", "cosine similarity"]'
+    assert _parse_queries(nested_prose) == ["vector search", "cosine similarity"]
+
+    # 5. Garbage input
+    assert _parse_queries("not valid json at all [unclosed") == []
+    assert _parse_queries("   ") == []
+
+
+def test_parse_queries_keeps_strings_and_ignores_other_elements():
+    assert _parse_queries('{"queries": ["find skill", 1, null, " "]}') == ["find skill"]
+    assert _parse_queries('["a", 2, "b"]') == ["a", "b"]
+    assert _parse_queries('Numbers [1, 2, 3] then ["real query"]') == ["real query"]
+    assert _parse_queries("[1, 2, 3]") == []

@@ -8,11 +8,22 @@ import time
 import httpx
 
 from skill_inject_mcp.codex_adapter import async_prompt_context
+from skill_inject_mcp.config import Settings
 from skill_inject_mcp.embed.embedder import OpenRouterEmbedder
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest
 
 
 QUERY = "Install Python project dependencies with pip"
+_DEFAULTS = Settings(_env_file=None)
+_EMBEDDER_KW = {
+    "model": _DEFAULTS.embedding_model,
+    "dim": _DEFAULTS.embedding_dim,
+    "base_url": _DEFAULTS.embedding_base_url,
+    "timeout_s": _DEFAULTS.embedding_timeout_s,
+    "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+    "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+    "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+}
 
 
 def context(result):
@@ -31,7 +42,7 @@ def test_timed_out_http_request_is_cancelled_and_does_not_block_followup(engine)
                 finally:
                     cancelled.set()
             return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.] + [0.] * 1023}]})
-        remote = OpenRouterEmbedder(api_key="test", dim=1024)
+        remote = OpenRouterEmbedder(api_key="test", **_EMBEDDER_KW)
         remote._async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         remote._async_loop = asyncio.get_running_loop()
         snapshot = engine._snapshot
@@ -77,7 +88,7 @@ def test_hook_does_not_wait_for_long_resolve_lock(engine):
 
 
 def test_timeout_omits_bm25_hits_without_positive_description_coverage(engine, monkeypatch):
-    async def slow(texts):
+    async def slow(texts, deadline=None):
         await asyncio.sleep(10)
     monkeypatch.setattr(engine._snapshot.embedder, "aembed_queries", slow)
     engine.settings.hook_timeout_s = .03
@@ -103,10 +114,10 @@ def test_retired_index_file_cleanup_does_not_delay_hook_reply(engine, monkeypatc
         snapshot = engine._snapshot
         original_embed = snapshot.embedder.aembed_queries
         original_dispose = snapshot._dispose
-        async def delayed(texts):
+        async def delayed(texts, deadline=None):
             entered.set()
             await release.wait()
-            return await original_embed(texts)
+            return await original_embed(texts, deadline=deadline)
         def slow_dispose():
             time.sleep(.3)
             original_dispose()
@@ -141,8 +152,14 @@ def test_cold_hook_returns_without_waiting_for_background_index(engine, monkeypa
         started = time.monotonic()
         result = asyncio.run(async_prompt_context(cold, QUERY))
         assert time.monotonic() - started < .3
-        assert "unavailable" in context(result)
+        assert "unavailable; no published index snapshot is ready" in context(result)
+        assert not entered.is_set()
+        cold.request_background_refresh()
         assert entered.wait(1)
+        started = time.monotonic()
+        while_building = asyncio.run(async_prompt_context(cold, QUERY))
+        assert time.monotonic() - started < .3
+        assert "unavailable; no published index snapshot is ready" in context(while_building)
     finally:
         release.set()
         cold.close()
@@ -153,10 +170,13 @@ def test_explicit_tool_skill_directory_does_not_leak_into_global_hook(engine, tm
     path.parent.mkdir(parents=True)
     path.write_text("---\nname: private-fixture\ndescription: Install packages\n---\nInstall packages", encoding="utf-8")
     engine.ensure_index(path.parent.parent)
-    monkeypatch.setattr(engine, "request_background_refresh", lambda: None)
+    monkeypatch.setattr(
+        engine, "request_background_refresh",
+        lambda: (_ for _ in ()).throw(AssertionError("Hook must not request background refresh")),
+    )
     result = asyncio.run(async_prompt_context(engine, QUERY))
     assert "private-fixture" not in context(result)
-    assert "unavailable" in context(result)
+    assert "unavailable; no published index snapshot is ready" in context(result)
 
 
 def test_failed_refresh_uses_explicit_last_known_catalog(engine, monkeypatch):

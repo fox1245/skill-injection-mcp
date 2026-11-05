@@ -4,9 +4,8 @@ from pathlib import Path
 
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.engine import SkillInjectEngine
-from skill_inject_mcp.registry.layer import classify_requirement_layer, classify_skill_layer
-from skill_inject_mcp.registry.layer import KNOWN_META_IDS
-from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta
+from skill_inject_mcp.registry.layer import classify_skill_layer
+from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta, ValidationErrorItem
 
 
 def _write_skill(root: Path, name: str, description: str, extra: str = "") -> None:
@@ -27,27 +26,53 @@ def _engine(tmp_path: Path, skills: Path) -> SkillInjectEngine:
 
 
 def test_explicit_frontmatter_and_requirement_layers():
+    errors: list[ValidationErrorItem] = []
     meta = SkillMeta(
         skill_id="custom-meta", name="custom-meta", description="does things",
         body="", path="custom-meta/SKILL.md", frontmatter={"layer": "meta"},
     )
-    assert classify_skill_layer(meta) == "meta"
-    assert classify_requirement_layer("Create a Codex skill with SKILL.md") == "meta"
-    assert classify_requirement_layer("Install Python packages with pip") == "domain"
-    assert "agentx-codex-conductor" in KNOWN_META_IDS
-    assert classify_requirement_layer(
-        "Coordinate Codex use of skill-injection-mcp, self-directing-mcp, and AgentX"
-    ) == "meta"
+    domain_explicit = SkillMeta(
+        skill_id="skill-creator", name="skill-creator", description="Create a skill with SKILL.md",
+        body="", path="skill-creator/SKILL.md", frontmatter={"layer": "domain"}, tags=["meta"],
+    )
+    domain_default = SkillMeta(
+        skill_id="agentx-codex-conductor", name="agentx-codex-conductor",
+        description="Create or inspect SKILL.md catalog",
+        body="", path="agentx-codex-conductor/SKILL.md", frontmatter={}, tags=["meta"],
+    )
+    assert classify_skill_layer(meta, errors) == "meta"
+    assert classify_skill_layer(domain_explicit, errors) == "domain"
+    assert classify_skill_layer(domain_default, errors) == "domain"
+    assert errors == []
+
+    invalid = SkillMeta(
+        skill_id="bad-layer", name="bad-layer", description="bad layer value",
+        body="", path="bad-layer/SKILL.md", frontmatter={"layer": "orchestrator"},
+    )
+    assert classify_skill_layer(invalid, errors) == "domain"
+    assert len(errors) == 1
+    assert errors[0].code == "invalid_skill_layer"
+    assert errors[0].path == "bad-layer/SKILL.md"
 
 
 def test_domain_requirement_does_not_bind_meta_skill(tmp_path: Path):
     skills = tmp_path / "skills"
-    _write_skill(skills, "skill-creator", "Create or update a Codex skill with SKILL.md frontmatter.")
+    _write_skill(
+        skills,
+        "skill-creator",
+        "Install Python packages with pip and create a skill.",
+        extra="layer: meta\n",
+    )
     _write_skill(skills, "package-installer", "Install Python packages and project dependencies with pip.")
     eng = _engine(tmp_path, skills)
     try:
         resp = eng.resolve(SkillInjectRequest(requirements=[
-            Requirement(id="pip", description="Install Python packages with pip", required=True),
+            Requirement(
+                id="pip",
+                description="Install Python packages with pip",
+                required=True,
+                layer="domain",
+            ),
         ]))
         assert resp.checks[0].skill_id == "package-installer"
         assert resp.checks[0].layer == "domain"
@@ -57,32 +82,68 @@ def test_domain_requirement_does_not_bind_meta_skill(tmp_path: Path):
         eng.close()
 
 
-def test_agent_skill_security_review_uses_meta_layer():
-    description = (
-        "Review an AI agent skill for prompt injection, dangerous scripts, "
-        "and secret exfiltration before installation."
+def test_invalid_frontmatter_layer_reports_validation_error_and_unlayered_requirement_does_not_partition(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(
+        skills,
+        "bad-layer-skill",
+        "Install Python packages and project dependencies with pip.",
+        extra="layer: not-a-valid-layer\n",
     )
-    assert classify_requirement_layer(description) == "meta"
-    assert classify_requirement_layer(
-        description, "skill-inspector SkillSpector security review"
-    ) == "meta"
-    assert classify_requirement_layer("Security review", "SkillSpector") == "meta"
-    assert classify_requirement_layer("Inspect a Codex skill before installation") == "meta"
-    assert classify_requirement_layer("Review code for prompt injection and secret exfiltration") == "domain"
-    assert classify_requirement_layer("Review an agent implementation for security vulnerabilities") == "domain"
+    _write_skill(
+        skills,
+        "meta-only",
+        "Create or update a Codex skill with SKILL.md frontmatter.",
+        extra="layer: meta\n",
+    )
+    eng = _engine(tmp_path, skills)
+    try:
+        info = eng.ensure_index()
+        assert any(err["code"] == "invalid_skill_layer" for err in info["validation_errors"])
+        bad_skill = eng.registry.get("bad-layer-skill")
+        assert bad_skill is not None and bad_skill.layer == "domain"
+
+        # With layer=None on Requirement, meta skills are not partitioned away.
+        resp = eng.resolve(SkillInjectRequest(requirements=[
+            Requirement(
+                id="unlayered",
+                description="Create or update a Codex skill with SKILL.md frontmatter",
+                required=True,
+            ),
+        ]))
+        assert resp.checks[0].skill_id == "meta-only"
+        assert resp.checks[0].layer == "meta"
+        assert any(err.code == "invalid_skill_layer" for err in resp.validation_errors)
+    finally:
+        eng.close()
 
 
 def test_meta_requirement_binds_meta_skill(tmp_path: Path):
     skills = tmp_path / "skills"
-    _write_skill(skills, "skill-creator", "Create or update a Codex skill with SKILL.md frontmatter.")
-    _write_skill(skills, "package-installer", "Install Python packages and project dependencies with pip.")
+    _write_skill(
+        skills,
+        "skill-creator",
+        "Create or update a Codex skill with SKILL.md frontmatter.",
+        extra="layer: meta\n",
+    )
+    _write_skill(
+        skills,
+        "package-installer",
+        "Create or update a Codex skill with SKILL.md frontmatter and install packages.",
+    )
     eng = _engine(tmp_path, skills)
     try:
         resp = eng.resolve(SkillInjectRequest(requirements=[
-            Requirement(id="author", description="Create a Codex skill with SKILL.md", required=True),
+            Requirement(
+                id="author",
+                description="Create or update a Codex skill with SKILL.md",
+                required=True,
+                layer="meta",
+            ),
         ]))
         assert resp.checks[0].skill_id == "skill-creator"
         assert resp.checks[0].layer == "meta"
+        assert resp.evidence[0].layer == "meta"
     finally:
         eng.close()
 
@@ -105,6 +166,7 @@ def test_conductor_is_meta_and_covers_orchestration(tmp_path: Path):
                 id="conduct",
                 description="Conduct Codex use of skill-injection-mcp, self-directing-mcp, and AgentX on one delegated production task.",
                 required=True,
+                layer="meta",
             ),
         ]))
         assert resp.checks[0].skill_id == "agentx-codex-conductor"

@@ -152,14 +152,14 @@ registry_snapshot
 
 ## Incremental Embedding
 
-변경되지 않은 스킬 문서는 다시 임베딩하지 않습니다.
+각 스킬 문서는 이름, 설명, 본문 앞부분(`SKILL_INJECT_INDEX_SUMMARY_CHARS`, 기본 1,200자), 태그 요약만 dense 임베딩하며(sparse BM25 인덱스는 전체 본문 유지), 변경되지 않은 스킬 문서는 다시 임베딩하지 않습니다.
 
 * 변경되지 않은 문서 → 기존 벡터 재사용
 * 변경된 문서 → 새로운 인덱스 생성
 * 인덱싱 실패 → 이전 정상 스냅샷 유지
 * 임베딩 배치 크기 → 기본 `32`
 
-서버를 재시작해도 캐시를 유지하도록 설정할 수도 있습니다.
+영구 임베딩 캐시(`SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true`)가 기본으로 켜져 있어 서버를 재시작해도 변경되지 않은 문서의 임베딩을 재사용합니다.
 
 ---
 
@@ -348,6 +348,7 @@ resolve_skills
 ```text
 search_query
 depends_on
+layer
 ```
 
 또한 선택적으로 `draft_plan`을 제공할 수 있습니다.
@@ -360,6 +361,22 @@ draft_plan
 ```
 
 지원하지 않는 필드가 포함되면 조용히 무시하지 않고 오류를 반환합니다.
+
+---
+
+## Skill Layers
+
+스킬과 요구사항의 계층(`meta` 또는 `domain`)은 선언된 신호로만 결정됩니다(스킬 ID 목록, 태그, 설명 키워드나 정규식 휴리스틱을 사용하지 않음).
+
+* **스킬 계층 (`SKILL.md` frontmatter `layer`)**:
+  * `layer: meta` 또는 `layer: domain`으로 선언합니다.
+  * `layer` 필드가 없거나 `null`이면 `domain`으로 처리됩니다.
+  * 그 외의 잘못된 값은 `domain`으로 처리하고 `validation_errors`에 `invalid_skill_layer`를 기록합니다.
+* **요구사항 계층 (`Requirement.layer`)**:
+  * 요구사항에 선택적 필드 `layer: "meta" | "domain" | null`(기본값 `null`)을 지정할 수 있습니다.
+  * `req.layer`가 지정되면 해당 계층의 후보를 우선 검색·정렬(`primary or secondary`)하고, `req.layer`가 `null`(미지정)이면 계층별 분할을 수행하지 않습니다.
+* **프롬프트 훅 (`codex_prompt_hook`)**:
+  * 공백만 있는 프롬프트만 빈 응답을 반환하며, 후보에 대해 계층 필터링을 적용하지 않습니다.
 
 ---
 
@@ -457,6 +474,37 @@ qwen/qwen3-embedding-8b
 
 개발 환경에서는 항상 동일한 결과를 생성하는 `FakeEmbedder`를 사용할 수 있습니다.
 
+임베딩·엔드포인트·캐시·큐 및 재시도 설정:
+
+| Setting | Meaning |
+| --- | --- |
+| `SKILL_INJECT_INDEX_SUMMARY_CHARS` (`index_summary_chars`) | dense 임베딩에 포함할 스킬 본문 앞부분 최대 글자 수 (기본 `1200`, 변경 시 스냅샷 재구축) |
+| `SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE` (`persistent_embedding_cache`) | SQLite 기반 영구 임베딩 캐시 사용 여부 (기본 `true`) |
+| `SKILL_INJECT_EMBEDDING_BASE_URL` (`embedding_base_url`) | 임베딩 API 기본 URL (기본 `https://openrouter.ai/api/v1`) |
+| `SKILL_INJECT_EMBEDDING_API_KEY` (`embedding_api_key`) | 임베딩 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
+| `SKILL_INJECT_CHAT_BASE_URL` (`chat_base_url`) | 멀티쿼리 확장 및 semantic 검증용 채팅 API 기본 URL (기본 `https://openrouter.ai/api/v1`) |
+| `SKILL_INJECT_CHAT_API_KEY` (`chat_api_key`) | 멀티쿼리 확장 및 semantic 검증용 채팅 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
+| `SKILL_INJECT_CHAT_PROVIDER_ORDER` (`chat_provider_order`) | 채팅 요청(`provider.order`)에 전달할 프로바이더 우선순위 JSON 목록 (기본 `["Cerebras", "Groq"]`, 빈 목록 `[]`이면 `provider` 블록 생략) |
+| `SKILL_INJECT_EMBEDDING_MAX_CONCURRENCY` (`embedding_max_concurrency`) | 모든 프로세스가 공유하는 동시 임베딩 요청 슬롯 수 |
+| `SKILL_INJECT_EMBEDDING_QUEUE_DIR` (`embedding_queue_dir`) | 슬롯 락 파일을 저장하는 큐 디렉터리 (미지정 시 `<index_dir>/embedding-queue`) |
+| `SKILL_INJECT_EMBEDDING_QUEUE_MAX_WAIT_S` (`embedding_queue_max_wait_s`) | 별도 마감 시간이 없는 호출이 빈 슬롯을 기다리는 최대 시간(초) |
+| `SKILL_INJECT_EMBEDDING_MAX_RETRIES` (`embedding_max_retries`) | 재시도 대상 응답 수신 시 최대 재시도 횟수 |
+| `SKILL_INJECT_EMBEDDING_RETRY_STATUSES` (`embedding_retry_statuses`) | 재시도할 HTTP 상태 코드 목록 |
+| `SKILL_INJECT_EMBEDDING_RETRY_BASE_BACKOFF_S` (`embedding_retry_base_backoff_s`) | 지수 백오프의 기본 대기 시간(초) |
+| `SKILL_INJECT_EMBEDDING_RETRY_MAX_WAIT_S` (`embedding_retry_max_wait_s`) | 1회 재시도 대기 시간의 상한(초) |
+| `SKILL_INJECT_EMBEDDING_RETRY_JITTER` (`embedding_retry_jitter`) | 대기 시간에 곱해지는 추가 지터 비율 (`[0, 1]`) |
+| `SKILL_INJECT_LOCK_POLL_S` (`lock_poll_s`) | 슬롯 락 폴링 주기(초) |
+
+동일한 임베딩 서버를 공유하는 여러 설치 환경에서 `embedding_queue_dir` (`SKILL_INJECT_EMBEDDING_QUEUE_DIR`)을 같은 디렉터리로 지정하면 모든 설치가 하나의 큐를 공유합니다.
+
+큐를 공유하는 모든 프로세스는 같은 `embedding_max_concurrency` 값을 사용해야 합니다. 서버의 `Retry-After`는 최소 대기 시간입니다(지수 백오프와 둘 중 큰 값, 지터는 더하기만 함). `Retry-After`가 `embedding_retry_max_wait_s`를 넘으면 일찍 재시도하지 않고 호출이 포기합니다. 마감 시간이 있는 호출(hook)은 남은 시간으로 대기를 감당할 수 없으면 요청을 보내지 않고 실패합니다.
+
+## 인덱스 빌드 잠금과 세대 정리
+
+* 같은 `index_dir`을 쓰는 모든 프로세스에서 인덱스 빌드는 `index_dir/build.lock` 배타 잠금 아래에서 한 번에 하나만 실행됩니다(대기 시간 `SKILL_INJECT_INDEX_LOCK_TIMEOUT_S`). 나중에 들어온 프로세스는 영구 캐시에서 벡터를 읽습니다.
+* 각 `snapshot-*` 디렉터리는 사용 중인 프로세스가 잡고 있는 `lease.lock`을 가집니다. 빌드 잠금 아래에서 시작 시 한 번, 어떤 프로세스도 lease를 잡고 있지 않은 세대(또는 lease 파일이 없는 이전 버전의 세대)를 삭제합니다. 이전 버전 프로세스가 아직 실행 중이면 먼저 종료하세요.
+* 채팅 호출(멀티쿼리 확장, semantic 검증)은 `chat_base_url`/`chat_api_key`만 사용하며 더 이상 `embedding_base_url`로 가지 않습니다. 임베딩 서버가 채팅도 제공하던 설정은 `SKILL_INJECT_CHAT_BASE_URL`을 지정해야 합니다.
+
 ---
 
 # Offline Mode
@@ -553,7 +601,7 @@ NeoGraph 설치·로드 실패는 명시적인 오류이며 별도 실행기로 
 특징:
 
 * 프롬프트 실행을 차단하지 않음
-* 단순한 메시지는 건너뜀
+* 공백만 있는 프롬프트는 건너뜀
 * 기본 내부 타임아웃 120초, 상위 Codex 훅 타임아웃 권장값 240초
 * 기존 인덱스 스냅샷 사용
 * 백그라운드 인덱싱 지원
@@ -594,7 +642,7 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 
 # Timeout Configuration
 
-기본 HTTP 읽기 타임아웃:
+기본 HTTP 및 훅 타임아웃:
 
 | Setting                               | Default |
 | ------------------------------------- | ------: |
@@ -602,6 +650,11 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 | `SKILL_INJECT_EMBEDDING_TIMEOUT_S`    |    180s |
 | `SKILL_INJECT_MULTI_QUERY_TIMEOUT_S`  |     30s |
 | `SKILL_INJECT_VERIFICATION_TIMEOUT_S` |    120s |
+| `SKILL_INJECT_HTTP_CONNECT_TIMEOUT_S` (`http_connect_timeout_s`) |     10s |
+| `SKILL_INJECT_HTTP_WRITE_TIMEOUT_S` (`http_write_timeout_s`)     |     30s |
+| `SKILL_INJECT_HTTP_POOL_TIMEOUT_S` (`http_pool_timeout_s`)       |     10s |
+
+HTTP 연결(`http_connect_timeout_s`, 기본 10초), 쓰기(`http_write_timeout_s`, 기본 30초), 커넥션 풀 대기(`http_pool_timeout_s`, 기본 10초) 예산은 고정 상수가 아니라 설정에서 읽어 임베딩·멀티쿼리·semantic 검증 HTTP 호출에 전달됩니다.
 
 Codex 등록 권장값:
 
@@ -628,7 +681,7 @@ Codex 등록 권장값:
 * Semantic Search만으로 `supported` 판정을 만들기 위해서는 별도의 점수 기준을 충족해야 합니다.
 * RRF의 최대 점수보다 `constraints.min_score`를 높게 설정하면 모든 후보가 제거될 수 있습니다.
 * 인덱스 스냅샷은 기본적으로 프로세스 내부에서 유지됩니다.
-* Persistent Embedding Cache를 활성화하면 서버 재시작 이후에도 변경되지 않은 문서의 임베딩을 재사용할 수 있습니다.
+* Persistent Embedding Cache는 기본으로 활성화되어 있으며(`SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true`), 서버 재시작 이후에도 변경되지 않은 문서의 임베딩을 재사용합니다.
 * `pytest`는 실제 HTTP 요청을 차단합니다.
 * 실제 모델 기반 평가는 별도의 Opt-in Live Evaluation으로 실행합니다.
 

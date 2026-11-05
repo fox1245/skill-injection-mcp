@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Sequence
 
 import httpx
 
-from skill_inject_mcp.timeouts import MULTI_QUERY_READ_TIMEOUT_S, http_timeout
-
-DEFAULT_MULTI_QUERY_MODEL = "openai/gpt-oss-120b"
-DEFAULT_TIMEOUT_S = MULTI_QUERY_READ_TIMEOUT_S
-# Prefer fast inference hosts when the model is available there (OpenRouter provider routing).
-DEFAULT_PROVIDER_ORDER = ["Cerebras", "Groq"]
+from skill_inject_mcp.timeouts import http_timeout
 
 _SYSTEM = """You expand a skill-matching requirement into diverse search queries.
 Return ONLY a JSON array of 3 to 5 short strings (no markdown, no commentary).
@@ -56,28 +50,38 @@ def _dedupe_preserve(items: Sequence[str]) -> list[str]:
     return out
 
 
+def _extract_string_list(data: object) -> list[str] | None:
+    if isinstance(data, dict) and "queries" in data:
+        data = data["queries"]
+    if not isinstance(data, list):
+        return None
+    strings = [x.strip() for x in data if isinstance(x, str) and x.strip()]
+    return strings or None
+
+
 def _parse_queries(content: str) -> list[str]:
     text = (content or "").strip()
     if not text:
         return []
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if fence:
-        text = fence.group(1).strip()
+    decoder = json.JSONDecoder()
     try:
-        data = json.loads(text)
+        data, end = decoder.raw_decode(text)
+        if end == len(text):
+            # The whole reply is one JSON value: accept it or ignore it, never dig inside it.
+            return _extract_string_list(data) or []
     except json.JSONDecodeError:
-        m = re.search(r"\[[\s\S]*\]", text)
-        if not m:
-            return []
+        pass
+    pos = text.find("[")
+    while pos != -1:
         try:
-            data = json.loads(m.group(0))
+            data, _ = decoder.raw_decode(text, pos)
+            extracted = _extract_string_list(data) if isinstance(data, list) else None
+            if extracted is not None:
+                return extracted
         except json.JSONDecodeError:
-            return []
-    if isinstance(data, dict) and "queries" in data:
-        data = data["queries"]
-    if not isinstance(data, list):
-        return []
-    return [str(x).strip() for x in data if str(x).strip()]
+            pass
+        pos = text.find("[", pos + 1)
+    return []
 
 
 def expand_queries(
@@ -86,10 +90,13 @@ def expand_queries(
     *,
     api_key: str | None,
     enabled: bool = True,
-    model: str = DEFAULT_MULTI_QUERY_MODEL,
-    base_url: str = "https://openrouter.ai/api/v1",
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-    provider_order: Sequence[str] | None = None,
+    model: str,
+    base_url: str,
+    timeout_s: float,
+    connect_timeout_s: float,
+    write_timeout_s: float,
+    pool_timeout_s: float,
+    provider_order: Sequence[str],
     client: httpx.Client | None = None,
 ) -> MultiQueryResult:
     """Expand a requirement into 3-5 retrieval queries via OpenRouter chat.
@@ -107,8 +114,8 @@ def expand_queries(
     if not api_key:
         return MultiQueryResult(queries=[original], skipped=True, reason="no_api_key")
 
-    order = list(provider_order) if provider_order is not None else list(DEFAULT_PROVIDER_ORDER)
-    payload = {
+    order = list(provider_order)
+    payload: dict[str, object] = {
         "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM},
@@ -122,11 +129,12 @@ def expand_queries(
         ],
         "temperature": 0.3,
         "max_tokens": 400,
-        "provider": {
+    }
+    if order:
+        payload["provider"] = {
             "order": order,
             "allow_fallbacks": True,
-        },
-    }
+        }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -134,16 +142,22 @@ def expand_queries(
         "X-Title": "skill-injection-mcp",
     }
 
+    budget = http_timeout(
+        timeout_s,
+        connect_timeout_s=connect_timeout_s,
+        write_timeout_s=write_timeout_s,
+        pool_timeout_s=pool_timeout_s,
+    )
     owns_client = client is None
     http = client
     try:
         if http is None:
-            http = httpx.Client(timeout=http_timeout(timeout_s))
+            http = httpx.Client(timeout=budget)
         resp = http.post(
             f"{base_url.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
-            timeout=http_timeout(timeout_s),
+            timeout=budget,
         )
         resp.raise_for_status()
         body = resp.json()

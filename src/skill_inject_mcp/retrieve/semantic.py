@@ -5,14 +5,14 @@ import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Sequence
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from skill_inject_mcp.retrieve.checks import MatchAssessment
 from skill_inject_mcp.schemas import SkillMeta, VerificationDiagnostic
-from skill_inject_mcp.timeouts import VERIFICATION_READ_TIMEOUT_S, http_timeout
+from skill_inject_mcp.timeouts import http_timeout
 
 PROMPT_VERSION = "semantic-v4-deliverable-check"
 SYSTEM_PROMPT = """You verify whether Agent Skills support a user's ORIGINAL requirement.
@@ -202,11 +202,22 @@ class SemanticVerifier:
         self._cache: OrderedDict[str, MatchAssessment] = OrderedDict()
 
     def verify(
-        self, requirement: str, candidates: list[SkillMeta], *,
-        api_key: str | None, model: str = "openai/gpt-oss-120b",
-        base_url: str = "https://openrouter.ai/api/v1", timeout_s: float = VERIFICATION_READ_TIMEOUT_S,
-        max_source_chars: int = 16000, client: httpx.Client | None = None,
-        max_tokens: int = 8192, max_retries: int = 1,
+        self,
+        requirement: str,
+        candidates: list[SkillMeta],
+        *,
+        api_key: str | None,
+        model: str,
+        base_url: str,
+        timeout_s: float,
+        connect_timeout_s: float,
+        write_timeout_s: float,
+        pool_timeout_s: float,
+        provider_order: Sequence[str],
+        max_source_chars: int = 16000,
+        client: httpx.Client | None = None,
+        max_tokens: int = 8192,
+        max_retries: int = 1,
     ) -> VerificationBatch:
         if type(max_tokens) is not int or max_tokens < 1:
             raise ValueError("max_tokens must be a positive integer")
@@ -255,7 +266,7 @@ class SemanticVerifier:
         schema["$defs"]["CandidateVerdict"]["properties"]["skill_id"]["enum"] = [
             candidate["skill_id"] for candidate in pending
         ]
-        payload = {
+        payload: dict[str, object] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -269,21 +280,33 @@ class SemanticVerifier:
                 "name": "skill_capability_verification", "strict": True,
                 "schema": schema,
             }},
-            "provider": {"order": ["Cerebras", "Groq"], "allow_fallbacks": True, "require_parameters": True},
         }
+        order = list(provider_order)
+        if order:
+            payload["provider"] = {
+                "order": order,
+                "allow_fallbacks": True,
+                "require_parameters": True,
+            }
+        budget = http_timeout(
+            timeout_s,
+            connect_timeout_s=connect_timeout_s,
+            write_timeout_s=write_timeout_s,
+            pool_timeout_s=pool_timeout_s,
+        )
         owns_client = client is None
         http = client
         diagnostics = []
         try:
             if http is None:
-                http = httpx.Client(timeout=http_timeout(timeout_s))
+                http = httpx.Client(timeout=budget)
             for attempt in range(1, max_retries + 2):
                 response, data = None, None
                 try:
                     response = http.post(
                         f"{base_url.rstrip('/')}/chat/completions", json=payload,
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        timeout=http_timeout(timeout_s),
+                        timeout=budget,
                     )
                     response.raise_for_status()
                     try:

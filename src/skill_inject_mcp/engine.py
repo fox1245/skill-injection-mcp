@@ -10,11 +10,20 @@ import logging
 import httpx
 
 from skill_inject_mcp.config import Settings, get_settings
+from skill_inject_mcp.embed.admission import build_admission
 from skill_inject_mcp.embed.embedder import build_embedder
-from skill_inject_mcp.index.snapshot import build_snapshot, embedding_identity, fingerprint
+from skill_inject_mcp.index.locks import FileLock
+from skill_inject_mcp.index.snapshot import (
+    BUILD_LOCK_NAME,
+    build_snapshot,
+    embedding_identity,
+    fingerprint,
+    index_identity,
+    sweep_orphan_generations,
+)
 from skill_inject_mcp.registry.scan import SkillRegistry
-from skill_inject_mcp.registry.layer import classify_requirement_layer, partition_hits
-from skill_inject_mcp.registry.signature import source_signature
+from skill_inject_mcp.registry.layer import partition_hits
+from skill_inject_mcp.registry.signature import mark_unreadable, source_signature
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.retrieve.multi_query import expand_queries
@@ -50,6 +59,7 @@ class SkillInjectEngine:
         self._last_refresh_error = None
         self._closed = False
         self._cleanup_jobs = set()
+        self._orphans_swept = False
 
     def _selection(self, skills_dir: Path | None = None) -> tuple[str, Path]:
         if skills_dir is None and self.settings.skill_manifest is not None:
@@ -57,14 +67,40 @@ class SkillInjectEngine:
         return ("directory", Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve())
 
     def _get_embedder(self):
-        identity = (embedding_identity(self.settings), self.settings.embedding_timeout_s, self.settings.query_cache_size)
+        embed_key = self.settings.resolve_embedding_api_key()
+        identity = (
+            embedding_identity(self.settings),
+            embed_key,
+            self.settings.embedding_timeout_s,
+            self.settings.http_connect_timeout_s,
+            self.settings.http_write_timeout_s,
+            self.settings.http_pool_timeout_s,
+            self.settings.query_cache_size,
+            self.settings.embedding_max_concurrency,
+            self.settings.embedding_queue_dir,
+            self.settings.index_dir,
+            self.settings.lock_poll_s,
+            self.settings.embedding_queue_max_wait_s,
+            self.settings.embedding_max_retries,
+            tuple(self.settings.embedding_retry_statuses),
+            self.settings.embedding_retry_base_backoff_s,
+            self.settings.embedding_retry_max_wait_s,
+            self.settings.embedding_retry_jitter,
+        )
         with self._snapshot_guard:
             if identity not in self._embedders:
                 self._embedders[identity] = build_embedder(
-                    api_key=self.settings.resolve_api_key(), use_fake=self.settings.use_fake_embedder,
-                    model=self.settings.embedding_model, dim=self.settings.embedding_dim,
-                    base_url=self.settings.embedding_base_url, timeout_s=self.settings.embedding_timeout_s,
+                    api_key=embed_key,
+                    use_fake=self.settings.use_fake_embedder,
+                    model=self.settings.embedding_model,
+                    dim=self.settings.embedding_dim,
+                    base_url=self.settings.embedding_base_url,
+                    timeout_s=self.settings.embedding_timeout_s,
+                    connect_timeout_s=self.settings.http_connect_timeout_s,
+                    write_timeout_s=self.settings.http_write_timeout_s,
+                    pool_timeout_s=self.settings.http_pool_timeout_s,
                     query_cache_size=self.settings.query_cache_size,
+                    admission=None if self.settings.use_fake_embedder else build_admission(self.settings),
                 )
             return self._embedders[identity]
 
@@ -87,7 +123,7 @@ class SkillInjectEngine:
         selection = self._selection(skills_dir)
         signature = source_signature(selection, None if force else self._source_signature)
         if (not force and self._snapshot is not None and signature == self._source_signature
-                and self._snapshot.identity == embedding_identity(self.settings)):
+                and self._snapshot.identity == index_identity(self.settings)):
             return self._snapshot.info()
         registry = SkillRegistry()
         if skills_dir is None and self.settings.skill_manifest is not None:
@@ -99,33 +135,77 @@ class SkillInjectEngine:
             if not root.is_dir():
                 raise ValueError(f"Skills directory does not exist: {root}")
             registry.load(root)
-        snapshot_id = fingerprint(registry, root, embedding_identity(self.settings))
+        unreadable = {
+            str(variant)
+            for err in registry.validation_errors if err.code == "missing_skill_path" and err.path
+            for variant in (Path(err.path), Path(err.path).absolute())
+        }
+        if unreadable:
+            signature = mark_unreadable(signature, unreadable)
+        snapshot_id = fingerprint(registry, root, index_identity(self.settings))
         if not force and self._snapshot is not None and self._snapshot.snapshot_id == snapshot_id:
             self._source_signature = signature
             self._snapshot.source_signature = signature
             return self._snapshot.info()
-        candidate = build_snapshot(
-            self.settings, registry, root, snapshot_id, self._snapshot,
-            embedder_state=self._get_embedder() if self.settings.retrieval_mode == "hybrid" else None,
-        )
-        retriever = HybridRetriever(
-            sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
-            skills=registry.skills, rrf_k=self.settings.rrf_k,
-            retrieve_top_k=self.settings.retrieve_top_k,
-        )
-        candidate.source_signature = signature
-        with self._snapshot_guard:
-            previous = self._snapshot
-            self._snapshot = candidate
-            self._source_signature = signature
-        self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
-        self.embedder = candidate.embedder
-        self.embedder_degraded = candidate.embedder_degraded
-        self.dense_backend, self.retriever = candidate.backend, retriever
-        self._indexed = True
-        if previous is not None:
-            previous.close()
-        return candidate.info()
+        index_root = Path(self.settings.index_dir).resolve()
+        build_lock = FileLock(index_root / BUILD_LOCK_NAME)
+        try:
+            try:
+                build_lock.acquire(
+                    timeout_s=self.settings.index_lock_timeout_s,
+                    poll_s=self.settings.lock_poll_s,
+                )
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"Timed out waiting for index build lock: {build_lock.path} "
+                    f"(timeout_s={self.settings.index_lock_timeout_s:g})"
+                ) from exc
+            if not self._orphans_swept:
+                sweep_orphan_generations(index_root, build_lock)
+                self._orphans_swept = True
+            candidate = build_snapshot(
+                self.settings, registry, root, snapshot_id, self._snapshot,
+                embedder_state=self._get_embedder() if self.settings.retrieval_mode == "hybrid" else None,
+            )
+        finally:
+            build_lock.release()
+        published = False
+        previous = None
+        try:
+            retriever = HybridRetriever(
+                sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
+                skills=registry.skills, rrf_k=self.settings.rrf_k,
+                retrieve_top_k=self.settings.retrieve_top_k,
+            )
+            candidate.source_signature = signature
+            with self._snapshot_guard:
+                if self._closed:
+                    raise RuntimeError("Skill engine is closed")
+                previous = self._snapshot
+                self._snapshot = candidate
+                self._source_signature = signature
+                published = True
+            self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
+            self.embedder = candidate.embedder
+            self.embedder_degraded = candidate.embedder_degraded
+            self.dense_backend, self.retriever = candidate.backend, retriever
+            self._indexed = True
+            return candidate.info()
+        finally:
+            if not published:
+                try:
+                    candidate.close()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Unpublished index generation cleanup failed (%s)", type(exc).__name__,
+                    )
+            if previous is not None:
+                try:
+                    previous.close()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Retired index generation cleanup failed (%s)", type(exc).__name__,
+                    )
 
     def close(self) -> None:
         with self._lock:
@@ -177,18 +257,17 @@ class SkillInjectEngine:
             snapshot = self._snapshot
             if (self._closed or snapshot is None or snapshot.source_signature is None
                     or snapshot.source_signature[0] != selection
-                    or snapshot.identity != embedding_identity(self.settings)):
+                    or snapshot.identity != index_identity(self.settings)):
                 return None
             return snapshot if snapshot.acquire() else None
 
     def hook_catalog_state(self, snapshot) -> str:
         try:
             current = source_signature(self._selection(), snapshot.source_signature)
-            if current == snapshot.source_signature and snapshot.identity == embedding_identity(self.settings):
+            if current == snapshot.source_signature and snapshot.identity == index_identity(self.settings):
                 return "current"
         except (OSError, ValueError, KeyError, TypeError):
             pass
-        self.request_background_refresh()
         return "last-known"
 
     def request_background_refresh(self) -> None:
@@ -292,9 +371,15 @@ class SkillInjectEngine:
                 nonlocal degraded, search_hits, ranked_hits
                 mq = expand_queries(
                     req.description, req.search_query,
-                    api_key=None if self.settings.retrieval_mode == "lexical" else self.settings.resolve_api_key(),
-                    enabled=self.settings.multi_query_enabled(), model=self.settings.multi_query_model,
-                    base_url=self.settings.embedding_base_url, timeout_s=self.settings.multi_query_timeout_s,
+                    api_key=None if self.settings.retrieval_mode == "lexical" else self.settings.resolve_chat_api_key(),
+                    enabled=self.settings.multi_query_enabled(),
+                    model=self.settings.multi_query_model,
+                    base_url=self.settings.chat_base_url,
+                    timeout_s=self.settings.multi_query_timeout_s,
+                    connect_timeout_s=self.settings.http_connect_timeout_s,
+                    write_timeout_s=self.settings.http_write_timeout_s,
+                    pool_timeout_s=self.settings.http_pool_timeout_s,
+                    provider_order=self.settings.chat_provider_order,
                     client=self._get_chat_client() if self.settings.multi_query_enabled() else None,
                 )
                 if mq.skipped and self.settings.multi_query_enabled():
@@ -306,10 +391,13 @@ class SkillInjectEngine:
                 all_hits = self.retriever.retrieve(
                     req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
                 )
-                wanted = classify_requirement_layer(req.description, req.search_query)
-                primary, secondary = partition_hits(all_hits, self.registry.skills, wanted)
-                search_hits = primary or secondary
-                ranked_hits = primary + secondary
+                if req.layer is not None:
+                    primary, secondary = partition_hits(all_hits, self.registry.skills, req.layer)
+                    search_hits = primary or secondary
+                    ranked_hits = primary + secondary
+                else:
+                    search_hits = list(all_hits)
+                    ranked_hits = list(all_hits)
             def verify():
                 nonlocal semantic_assessments, verification_degraded
                 if mode == "semantic":
@@ -319,9 +407,15 @@ class SkillInjectEngine:
                         and self.registry.get(hit.skill_id) is not None
                     ][:self.settings.verification_top_k]
                     verification = self._verifier.verify(
-                        req.description, candidates, api_key=self.settings.resolve_api_key(),
-                        model=self.settings.verification_model, base_url=self.settings.embedding_base_url,
+                        req.description, candidates,
+                        api_key=self.settings.resolve_chat_api_key(),
+                        model=self.settings.verification_model,
+                        base_url=self.settings.chat_base_url,
                         timeout_s=self.settings.verification_timeout_s,
+                        connect_timeout_s=self.settings.http_connect_timeout_s,
+                        write_timeout_s=self.settings.http_write_timeout_s,
+                        pool_timeout_s=self.settings.http_pool_timeout_s,
+                        provider_order=self.settings.chat_provider_order,
                         max_source_chars=self.settings.verification_max_source_chars,
                         max_tokens=self.settings.verification_max_tokens,
                         max_retries=self.settings.verification_max_retries,

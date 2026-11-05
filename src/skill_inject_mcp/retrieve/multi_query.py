@@ -53,9 +53,10 @@ def _dedupe_preserve(items: Sequence[str]) -> list[str]:
 def _extract_string_list(data: object) -> list[str] | None:
     if isinstance(data, dict) and "queries" in data:
         data = data["queries"]
-    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+    if not isinstance(data, list):
         return None
-    return [x.strip() for x in data if x.strip()]
+    strings = [x.strip() for x in data if isinstance(x, str) and x.strip()]
+    return strings or None
 
 
 def _parse_queries(content: str) -> list[str]:
@@ -74,8 +75,9 @@ def _parse_queries(content: str) -> list[str]:
     while pos != -1:
         try:
             data, _ = decoder.raw_decode(text, pos)
-            if isinstance(data, list) and all(isinstance(x, str) for x in data):
-                return [x.strip() for x in data if x.strip()]
+            extracted = _extract_string_list(data) if isinstance(data, list) else None
+            if extracted is not None:
+                return extracted
         except json.JSONDecodeError:
             pass
         pos = text.find("[", pos + 1)

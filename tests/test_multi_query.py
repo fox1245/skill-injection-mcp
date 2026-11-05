@@ -220,3 +220,10 @@ def test_parse_queries_raw_decode_cases():
     # 5. Garbage input
     assert _parse_queries("not valid json at all [unclosed") == []
     assert _parse_queries("   ") == []
+
+
+def test_parse_queries_keeps_strings_and_ignores_other_elements():
+    assert _parse_queries('{"queries": ["find skill", 1, null, " "]}') == ["find skill"]
+    assert _parse_queries('["a", 2, "b"]') == ["a", "b"]
+    assert _parse_queries('Numbers [1, 2, 3] then ["real query"]') == ["real query"]
+    assert _parse_queries("[1, 2, 3]") == []

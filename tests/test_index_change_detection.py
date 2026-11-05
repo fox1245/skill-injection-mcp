@@ -241,3 +241,21 @@ def test_manifest_entry_pointing_to_directory_or_non_skill_md_reported(tmp_path)
         assert error_paths == [str(a_dir), str(non_skill)]
     finally:
         engine.close()
+
+
+def test_skill_file_that_is_not_valid_utf8_is_reported_and_the_others_still_load(tmp_path):
+    from skill_inject_mcp.registry.scan import SkillRegistry
+
+    root = tmp_path / "skills"
+    good = root / "good" / "SKILL.md"
+    good.parent.mkdir(parents=True)
+    good.write_text("---\nname: good\ndescription: fine\n---\nbody\n", encoding="utf-8")
+    bad = root / "bad" / "SKILL.md"
+    bad.parent.mkdir(parents=True)
+    bad.write_bytes(b"---\nname: bad\n---\n\xff\xfe\x00 not utf-8")
+    registry = SkillRegistry()
+    registry.load(root)
+    assert list(registry.skills) == ["good"]
+    assert [(e.code, e.path) for e in registry.validation_errors if e.code == "missing_skill_path"] == [
+        ("missing_skill_path", str(bad)),
+    ]

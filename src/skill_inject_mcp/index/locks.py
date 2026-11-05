@@ -20,10 +20,10 @@ if sys.platform == "win32":
     import msvcrt
 
     def _lock_fd(fd: int) -> bool:
-        if os.fstat(fd).st_size == 0:
-            os.write(fd, b"\x00")
-        os.lseek(fd, 0, os.SEEK_SET)
         try:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\x00")
+            os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
         except OSError as exc:

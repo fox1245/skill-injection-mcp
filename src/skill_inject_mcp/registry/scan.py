@@ -37,7 +37,8 @@ def scan_skills(
         try:
             raw = skill_md.read_bytes()
             source_path = str(skill_md.resolve())
-        except OSError:
+            text = raw.decode("utf-8-sig")
+        except (OSError, UnicodeDecodeError):
             if errors is not None:
                 errors.append(ValidationErrorItem(
                     code="missing_skill_path",
@@ -45,7 +46,7 @@ def scan_skills(
                     path=str(skill_md),
                 ))
             continue
-        fm, body = _parse_frontmatter(raw.decode("utf-8-sig"))
+        fm, body = _parse_frontmatter(text)
         skill_id = str(fm.get("id") or fm.get("skill_id") or skill_md.parent.name)
         deps = fm.get("depends_on") or fm.get("dependencies") or []
         tags = fm.get("tags") or []

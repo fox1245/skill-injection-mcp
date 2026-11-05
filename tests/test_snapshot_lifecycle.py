@@ -410,3 +410,21 @@ def test_a_generation_already_removed_by_another_process_is_not_an_error(tmp_pat
     lease.release()
     shutil.rmtree(directory)
     _remove_generation(directory, tmp_path / "index")  # must not raise
+
+
+def test_one_unusable_lease_file_does_not_stop_the_sweep_or_the_build(tmp_path: Path) -> None:
+    index_dir = tmp_path / "index"
+    bad = index_dir / "snapshot-bad-lease"
+    (bad / "lease.lock").mkdir(parents=True)  # a lease path that cannot be opened as a lock file
+    orphan = index_dir / "snapshot-orphan"
+    orphan.mkdir(parents=True)
+    engine = SkillInjectEngine(Settings(
+        _env_file=None, skills_dir=FIXTURES, index_dir=index_dir,
+        use_fake_embedder=True, multi_query=False,
+    ))
+    try:
+        engine.ensure_index()
+        assert not orphan.exists()
+        assert bad.exists()
+    finally:
+        engine.close()

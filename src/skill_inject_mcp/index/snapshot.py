@@ -107,14 +107,14 @@ def sweep_orphan_generations(index_root: Path, build_lock: FileLock) -> list[str
         if not entry.name.startswith(GENERATION_PREFIX) or entry.is_symlink() or not entry.is_dir():
             continue
         lease_path = entry / LEASE_NAME
-        if lease_path.exists():
-            probe = FileLock(lease_path)
-            try:
-                if not probe.try_acquire():
-                    continue
-            finally:
-                probe.release()
         try:
+            if lease_path.exists():
+                probe = FileLock(lease_path)
+                try:
+                    if not probe.try_acquire():
+                        continue
+                finally:
+                    probe.release()
             _remove_generation(entry, root)
             removed.append(entry.name)
         except Exception as exc:

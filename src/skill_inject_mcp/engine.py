@@ -193,7 +193,12 @@ class SkillInjectEngine:
             return candidate.info()
         finally:
             if not published:
-                candidate.close()
+                try:
+                    candidate.close()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Unpublished index generation cleanup failed (%s)", type(exc).__name__,
+                    )
             if previous is not None:
                 try:
                     previous.close()

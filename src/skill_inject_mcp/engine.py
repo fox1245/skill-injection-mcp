@@ -14,6 +14,7 @@ from skill_inject_mcp.embed.admission import build_admission
 from skill_inject_mcp.embed.embedder import build_embedder
 from skill_inject_mcp.index.locks import FileLock
 from skill_inject_mcp.index.snapshot import (
+    BUILD_LOCK_NAME,
     build_snapshot,
     embedding_identity,
     fingerprint,
@@ -77,6 +78,8 @@ class SkillInjectEngine:
             self.settings.query_cache_size,
             self.settings.embedding_max_concurrency,
             self.settings.embedding_queue_dir,
+            self.settings.index_dir,
+            self.settings.lock_poll_s,
             self.settings.embedding_queue_max_wait_s,
             self.settings.embedding_max_retries,
             tuple(self.settings.embedding_retry_statuses),
@@ -138,18 +141,18 @@ class SkillInjectEngine:
             self._snapshot.source_signature = signature
             return self._snapshot.info()
         index_root = Path(self.settings.index_dir).resolve()
-        build_lock = FileLock(index_root / "build.lock")
+        build_lock = FileLock(index_root / BUILD_LOCK_NAME)
         try:
-            build_lock.acquire(
-                timeout_s=self.settings.index_lock_timeout_s,
-                poll_s=self.settings.lock_poll_s,
-            )
-        except TimeoutError as exc:
-            raise RuntimeError(
-                f"Timed out waiting for index build lock: {build_lock.path} "
-                f"(timeout_s={self.settings.index_lock_timeout_s:g})"
-            ) from exc
-        try:
+            try:
+                build_lock.acquire(
+                    timeout_s=self.settings.index_lock_timeout_s,
+                    poll_s=self.settings.lock_poll_s,
+                )
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"Timed out waiting for index build lock: {build_lock.path} "
+                    f"(timeout_s={self.settings.index_lock_timeout_s:g})"
+                ) from exc
             if not self._orphans_swept:
                 sweep_orphan_generations(index_root, build_lock)
                 self._orphans_swept = True
@@ -185,7 +188,12 @@ class SkillInjectEngine:
             if not published:
                 candidate.close()
             if previous is not None:
-                previous.close()
+                try:
+                    previous.close()
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Retired index generation cleanup failed (%s)", type(exc).__name__,
+                    )
 
     def close(self) -> None:
         with self._lock:

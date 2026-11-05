@@ -1,24 +1,35 @@
 """Cross-process advisory file locks released automatically on process exit."""
 from __future__ import annotations
 
+import errno
 import os
 import sys
 import time
 from pathlib import Path
 
 
+# errno values that mean "the lock is held by someone else"; any other OSError is a real failure and propagates.
+_BUSY_ERRNOS = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK})
+
+
+def _is_busy(exc: OSError) -> bool:
+    return isinstance(exc, (BlockingIOError, PermissionError)) or exc.errno in _BUSY_ERRNOS
+
+
 if sys.platform == "win32":
     import msvcrt
 
     def _lock_fd(fd: int) -> bool:
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\x00")
+        os.lseek(fd, 0, os.SEEK_SET)
         try:
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\x00")
-            os.lseek(fd, 0, os.SEEK_SET)
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            if _is_busy(exc):
+                return False
+            raise
 
     def _unlock_fd(fd: int) -> None:
         try:
@@ -33,8 +44,10 @@ else:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
-        except OSError:
-            return False
+        except OSError as exc:
+            if _is_busy(exc):
+                return False
+            raise
 
     def _unlock_fd(fd: int) -> None:
         try:

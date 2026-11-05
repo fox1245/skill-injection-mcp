@@ -368,3 +368,45 @@ def test_hook_paths_leave_no_generation_behind(tmp_path: Path, monkeypatch: pyte
         engine.close()
 
     assert _snapshot_dirs(index_dir) == []
+
+
+def test_sweep_requires_the_build_lock_of_this_index_directory(tmp_path: Path) -> None:
+    from skill_inject_mcp.index.snapshot import sweep_orphan_generations
+
+    index_dir = tmp_path / "index"
+    (index_dir / "snapshot-orphan").mkdir(parents=True)
+    other = FileLock(tmp_path / "other" / "build.lock")
+    assert other.try_acquire()
+    try:
+        with pytest.raises(RuntimeError):
+            sweep_orphan_generations(index_dir, other)
+        with pytest.raises(RuntimeError):
+            sweep_orphan_generations(index_dir, FileLock(index_dir / "build.lock"))  # not held
+    finally:
+        other.release()
+    assert (index_dir / "snapshot-orphan").exists()
+
+
+def test_discarding_an_unpublished_generation_survives_a_failing_close(tmp_path: Path) -> None:
+    from skill_inject_mcp.index.snapshot import _create_generation, _discard_generation
+
+    directory, lease = _create_generation(tmp_path / "index")
+
+    class Broken:
+        def close(self) -> None:
+            raise OSError("close failed")
+
+    _discard_generation(directory, tmp_path / "index", lease, Broken(), None)
+    assert not directory.exists()
+    assert not lease.held
+
+
+def test_a_generation_already_removed_by_another_process_is_not_an_error(tmp_path: Path) -> None:
+    import shutil
+
+    from skill_inject_mcp.index.snapshot import _create_generation, _remove_generation
+
+    directory, lease = _create_generation(tmp_path / "index")
+    lease.release()
+    shutil.rmtree(directory)
+    _remove_generation(directory, tmp_path / "index")  # must not raise

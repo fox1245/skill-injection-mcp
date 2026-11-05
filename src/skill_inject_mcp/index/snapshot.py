@@ -47,46 +47,73 @@ def fingerprint(registry: SkillRegistry, root: Path, identity: tuple) -> str:
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+GENERATION_PREFIX = "snapshot-"
+LEASE_NAME = "lease.lock"
+BUILD_LOCK_NAME = "build.lock"
+
+
 def _remove_generation(directory: Path, index_root: Path) -> None:
     # Never recursively delete caller-supplied paths. Only our generated child.
     target, parent = directory.resolve(), index_root.resolve()
-    if target.parent != parent or not target.name.startswith("snapshot-"):
+    if target.parent != parent or not target.name.startswith(GENERATION_PREFIX):
         raise ValueError("Refusing to remove a path outside the managed index generation")
-    shutil.rmtree(target)
+    try:
+        shutil.rmtree(target)
+    except FileNotFoundError:
+        # Another process removed the same unleased generation first; the goal is met.
+        pass
+
+
+def _discard_generation(directory: Path, index_root: Path, lease: FileLock, *closables) -> None:
+    """Best-effort cleanup of a generation that was never published; never masks the caller's error."""
+    for closable in closables:
+        if closable is not None:
+            try:
+                closable.close()
+            except Exception:
+                pass
+    lease.release()
+    try:
+        if directory.exists():
+            _remove_generation(directory, index_root)
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Index generation cleanup failed (%s)", type(exc).__name__,
+        )
 
 
 def _create_generation(index_root: Path) -> tuple[Path, FileLock]:
     root = Path(index_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    directory = Path(tempfile.mkdtemp(prefix="snapshot-", dir=root))
-    lease = FileLock(directory / "lease.lock")
+    directory = Path(tempfile.mkdtemp(prefix=GENERATION_PREFIX, dir=root))
+    lease = FileLock(directory / LEASE_NAME)
     try:
         if not lease.try_acquire():
             raise RuntimeError(f"Could not acquire lease for index generation: {directory}")
         return directory, lease
     except BaseException:
-        lease.release()
-        if directory.exists():
-            _remove_generation(directory, root)
+        _discard_generation(directory, root, lease)
         raise
 
 
 def sweep_orphan_generations(index_root: Path, build_lock: FileLock) -> list[str]:
-    if build_lock is None or not build_lock.held:
-        raise RuntimeError("sweep_orphan_generations requires a held build_lock")
     root = Path(index_root).resolve()
+    if build_lock is None or not build_lock.held or build_lock.path.resolve() != root / BUILD_LOCK_NAME:
+        raise RuntimeError("sweep_orphan_generations requires the held build lock of this index directory")
     if not root.is_dir():
         return []
     removed: list[str] = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name):
-        if not entry.name.startswith("snapshot-") or not entry.is_dir():
+        if not entry.name.startswith(GENERATION_PREFIX) or entry.is_symlink() or not entry.is_dir():
             continue
-        lease_path = entry / "lease.lock"
+        lease_path = entry / LEASE_NAME
         if lease_path.exists():
             probe = FileLock(lease_path)
-            if not probe.try_acquire():
-                continue
-            probe.release()
+            try:
+                if not probe.try_acquire():
+                    continue
+            finally:
+                probe.release()
         try:
             _remove_generation(entry, root)
             removed.append(entry.name)
@@ -191,11 +218,7 @@ def build_snapshot(
                 "off", {}, directory, index_root, lease=lease,
             )
         except BaseException:
-            if sparse is not None:
-                sparse.close()
-            lease.release()
-            if directory.exists():
-                _remove_generation(directory, index_root)
+            _discard_generation(directory, index_root, lease, sparse)
             raise
     if previous is not None and previous.identity == identity:
         embedder, degraded = embedder_state or (previous.embedder, previous.embedder_degraded)
@@ -273,11 +296,5 @@ def build_snapshot(
             backend, vectors, directory, index_root, lease=lease,
         )
     except BaseException:
-        if sparse is not None:
-            sparse.close()
-        if dense is not None:
-            dense.close()
-        lease.release()
-        if directory.exists():
-            _remove_generation(directory, index_root)
+        _discard_generation(directory, index_root, lease, sparse, dense)
         raise

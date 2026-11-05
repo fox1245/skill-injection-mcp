@@ -19,7 +19,10 @@ from skill_inject_mcp.index.locks import FileLock
 
 
 class EmbeddingUnavailable(RuntimeError):
-    """Raised when an embedding request cannot proceed within its queue, retry, or deadline budget."""
+    """Raised when an embedding request cannot proceed within its queue, retry, or deadline budget.
+
+    ``reason`` is one of ``deadline``, ``queue_timeout``, ``retries_exhausted`` and ``retry_after``.
+    """
 
     def __init__(self, reason: str, message: str | None = None) -> None:
         self.reason = reason
@@ -66,8 +69,9 @@ class SlotQueue:
         started = self._clock()
         if deadline is not None and started >= deadline:
             raise EmbeddingUnavailable("deadline")
-        limit = deadline if deadline is not None else (started + self.max_wait_s)
-        reason = "deadline" if deadline is not None else "queue_timeout"
+        limit, reason = started + self.max_wait_s, "queue_timeout"
+        if deadline is not None and deadline <= limit:
+            limit, reason = deadline, "deadline"
         while True:
             slot = self._try_acquire_any()
             if slot is not None:
@@ -83,8 +87,9 @@ class SlotQueue:
         started = self._clock()
         if deadline is not None and started >= deadline:
             raise EmbeddingUnavailable("deadline")
-        limit = deadline if deadline is not None else (started + self.max_wait_s)
-        reason = "deadline" if deadline is not None else "queue_timeout"
+        limit, reason = started + self.max_wait_s, "queue_timeout"
+        if deadline is not None and deadline <= limit:
+            limit, reason = deadline, "deadline"
         while True:
             slot = self._try_acquire_any()
             if slot is not None:
@@ -156,13 +161,21 @@ class RetryPolicy:
             return None
 
     def delay_s(self, attempt: int, headers: Mapping[str, str] | None = None) -> float:
+        """Wait before the next attempt.
+
+        The server's ``Retry-After`` is a floor: the wait is the larger of it and the exponential backoff.
+        A ``Retry-After`` beyond ``max_wait_s`` cannot be honoured within the configured bound, so the caller
+        gives up (``EmbeddingUnavailable("retry_after")``) instead of retrying early. Jitter only adds to the wait.
+        """
         retry_after = self._parse_retry_after(headers)
-        base = retry_after if retry_after is not None else (self.base_backoff_s * (2.0 ** attempt))
-        capped = min(float(base), float(self.max_wait_s))
+        if retry_after is not None and retry_after > self.max_wait_s:
+            raise EmbeddingUnavailable("retry_after")
+        backoff = min(self.base_backoff_s * (2.0 ** attempt), self.max_wait_s)
+        base = max(backoff, retry_after) if retry_after is not None else backoff
         if self.jitter <= 0.0:
-            return capped
+            return float(base)
         u = self.rng.random() if hasattr(self.rng, "random") else float(self.rng())
-        return float(capped * (1.0 + self.jitter * u))
+        return float(base * (1.0 + self.jitter * u))
 
 
 class EmbeddingAdmission:

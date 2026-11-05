@@ -155,57 +155,83 @@ def test_without_queue_exceeds_limit(tmp_path: Path) -> None:
     assert server.max_inflight > n_slots
 
 
-def test_retry_after_honoured_and_capped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def _retry_after_embedder(tmp_path, monkeypatch, responses, *, max_wait, now, backoff=0.5):
+    requests: list[object] = []
+    def handle(transport, request):
+        requests.append(request)
+        return responses.pop(0)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", handle)
+    sleeps: list[float] = []
+    settings = Settings(
+        _env_file=None,
+        index_dir=tmp_path / f"index-{max_wait}",
+        OPENROUTER_API_KEY="test-key",
+        embedding_dim=2,
+        embedding_max_concurrency=1,
+        embedding_max_retries=3,
+        embedding_retry_base_backoff_s=backoff,
+        embedding_retry_max_wait_s=max_wait,
+        embedding_retry_jitter=0.0,
+    )
+    admission = build_admission(settings, sleep=sleeps.append, now=lambda: now)
+    embedder, _ = _build_test_embedder(settings, api_key="test-key", dim=2, admission=admission)
+    return embedder, admission, sleeps, requests
+
+
+def test_retry_after_is_a_floor_for_the_backoff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fixed_now = datetime(2026, 11, 6, 12, 0, 0, tzinfo=timezone.utc)
     retry_date = email.utils.format_datetime(fixed_now + timedelta(seconds=2), usegmt=True)
-
-    for max_wait, expected_sleeps in [(30.0, [3.0, 2.0]), (1.5, [1.5, 1.5])]:
-        responses = [
-            httpx.Response(429, headers={"Retry-After": "3"}, json={"error": "rate_limit"}),
-            httpx.Response(429, headers={"Retry-After": retry_date}, json={"error": "rate_limit"}),
-            httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]}),
-        ]
-        monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda transport, request, r=responses: r.pop(0))
-        sleeps: list[float] = []
-        settings = Settings(
-            _env_file=None,
-            index_dir=tmp_path / f"index-{max_wait}",
-            OPENROUTER_API_KEY="test-key",
-            embedding_dim=2,
-            embedding_max_concurrency=1,
-            embedding_max_retries=3,
-            embedding_retry_base_backoff_s=0.5,
-            embedding_retry_max_wait_s=max_wait,
-            embedding_retry_jitter=0.0,
-        )
-        admission = build_admission(settings, sleep=sleeps.append, now=lambda: fixed_now)
-        embedder, _ = _build_test_embedder(
-            settings,
-            api_key="test-key",
-            dim=2,
-            admission=admission,
-        )
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "3"}, json={"error": "rate_limit"}),
+        httpx.Response(429, headers={"Retry-After": retry_date}, json={"error": "rate_limit"}),
+        httpx.Response(429, headers={"Retry-After": "0"}, json={"error": "rate_limit"}),
+        httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]}),
+    ]
+    embedder, admission, sleeps, requests = _retry_after_embedder(
+        tmp_path, monkeypatch, responses, max_wait=30.0, now=fixed_now,
+    )
+    try:
+        vectors = embedder.embed_queries(["install packages"])
+        assert len(vectors) == 1
+        # attempt 0: max(3, 0.5); attempt 1: max(2, 1.0); attempt 2: Retry-After 0 gives way to the backoff 2.0
+        assert sleeps == [3.0, 2.0, 2.0]
+        assert len(requests) == 4
+        assert admission.queue is not None
+        for slot_path in admission.queue.slot_paths():
+            probe = FileLock(slot_path)
+            assert probe.try_acquire()
+            probe.release()
+        # Query cache hits must not acquire a slot even when all slots are held.
+        held = [FileLock(p) for p in admission.queue.slot_paths()]
+        for lock in held:
+            assert lock.try_acquire()
         try:
-            vectors = embedder.embed_queries(["install packages"])
-            assert len(vectors) == 1
-            assert sleeps == expected_sleeps
-            assert admission.queue is not None
-            for slot_path in admission.queue.slot_paths():
-                probe = FileLock(slot_path)
-                assert probe.try_acquire()
-                probe.release()
-            # Query cache hits must not acquire a slot even when all slots are held.
-            held = [FileLock(p) for p in admission.queue.slot_paths()]
-            for lock in held:
-                assert lock.try_acquire()
-            try:
-                cached_vectors = embedder.embed_queries(["install packages"])
-                assert len(cached_vectors) == 1
-            finally:
-                for lock in held:
-                    lock.release()
+            assert len(embedder.embed_queries(["install packages"])) == 1
         finally:
-            embedder.close()
+            for lock in held:
+                lock.release()
+    finally:
+        embedder.close()
+
+
+def test_retry_after_beyond_the_cap_gives_up_instead_of_retrying_early(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 11, 6, 12, 0, 0, tzinfo=timezone.utc)
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "120"}, json={"error": "rate_limit"}),
+        httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.0, 0.0]}]}),
+    ]
+    embedder, _, sleeps, requests = _retry_after_embedder(
+        tmp_path, monkeypatch, responses, max_wait=30.0, now=fixed_now,
+    )
+    try:
+        with pytest.raises(EmbeddingUnavailable) as exc_info:
+            embedder.embed_queries(["install packages"])
+        assert exc_info.value.reason == "retry_after"
+        assert len(requests) == 1 and sleeps == []
+    finally:
+        embedder.close()
 
 
 def test_deadline_stops_before_retry_wait_exceeding_remaining_budget(
@@ -305,7 +331,7 @@ def test_slot_wait_deadline_and_async_non_blocking_acquire(
         OPENROUTER_API_KEY="test-key",
         embedding_dim=2,
         embedding_max_concurrency=2,
-        embedding_queue_max_wait_s=0.15,
+        embedding_queue_max_wait_s=30.0,
         lock_poll_s=0.01,
     )
     admission = build_admission(settings)
@@ -322,10 +348,6 @@ def test_slot_wait_deadline_and_async_non_blocking_acquire(
         assert exc_info.value.reason == "deadline"
         assert elapsed < 1.0
         assert requests == []
-
-        with pytest.raises(EmbeddingUnavailable) as queue_exc:
-            admission.queue.acquire(deadline=None)
-        assert queue_exc.value.reason == "queue_timeout"
 
         async def run_async_variant() -> None:
             ticks = 0
@@ -509,3 +531,43 @@ def test_hook_with_429_long_retry_after_returns_promptly_after_one_request(
         assert "BM25-only fallback (embedding unavailable: deadline)" in context
     finally:
         engine.close()
+
+
+def test_queue_wait_is_bounded_by_the_configured_maximum_even_with_a_later_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[object] = []
+    monkeypatch.setattr(
+        httpx.HTTPTransport,
+        "handle_request",
+        lambda transport, request: (requests.append(request), httpx.Response(200, json={"data": []}))[1],
+    )
+    settings = Settings(
+        _env_file=None,
+        index_dir=tmp_path / "index",
+        OPENROUTER_API_KEY="test-key",
+        embedding_dim=2,
+        embedding_max_concurrency=1,
+        embedding_queue_max_wait_s=0.15,
+        lock_poll_s=0.01,
+    )
+    admission = build_admission(settings)
+    assert admission.queue is not None
+    embedder, _ = _build_test_embedder(settings, api_key="test-key", dim=2, admission=admission)
+    held = [FileLock(path) for path in admission.queue.slot_paths()]
+    for lock in held:
+        assert lock.try_acquire()
+    try:
+        started = time.monotonic()
+        with pytest.raises(EmbeddingUnavailable) as exc_info:
+            embedder.embed_documents(["doc"], deadline=started + 60.0)
+        assert exc_info.value.reason == "queue_timeout"
+        assert time.monotonic() - started < 2.0
+        assert requests == []
+        with pytest.raises(EmbeddingUnavailable) as no_deadline:
+            admission.queue.acquire(deadline=None)
+        assert no_deadline.value.reason == "queue_timeout"
+    finally:
+        for lock in held:
+            lock.release()
+        embedder.close()

@@ -13,6 +13,7 @@ from threading import Lock
 import numpy as np
 
 from skill_inject_mcp.config import Settings
+from skill_inject_mcp.embed.admission import build_admission
 from skill_inject_mcp.embed.embedder import Embedder, build_embedder
 from skill_inject_mcp.index.locks import FileLock
 from skill_inject_mcp.index.sparse import SparseIndex
@@ -198,6 +199,7 @@ def build_snapshot(
             model=settings.embedding_model, dim=settings.embedding_dim,
             base_url=settings.embedding_base_url, timeout_s=settings.embedding_timeout_s,
             query_cache_size=settings.query_cache_size,
+            admission=None if settings.use_fake_embedder else build_admission(settings),
         )
         cached = {}
     skills = registry.all()

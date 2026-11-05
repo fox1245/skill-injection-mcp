@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     hook_timeout_s: float = Field(default=120.0, gt=0, allow_inf_nan=False)
     prompt_hook_enabled: bool = False
     embedding_timeout_s: float = Field(default=EMBEDDING_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
+    embedding_max_concurrency: int = Field(default=2, ge=1)
+    embedding_queue_dir: Path | None = None
+    embedding_queue_max_wait_s: float = Field(default=180.0, gt=0, allow_inf_nan=False)
+    embedding_max_retries: int = Field(default=3, ge=0)
+    embedding_retry_statuses: list[int] = Field(default_factory=lambda: [429, 502, 503, 504])
+    embedding_retry_base_backoff_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
+    embedding_retry_max_wait_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    embedding_retry_jitter: float = Field(default=0.2, ge=0.0, le=1.0, allow_inf_nan=False)
     persistent_embedding_cache: bool = False
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
@@ -132,6 +140,7 @@ def load_hook_settings(repo_root: Path | None = None) -> Settings:
     settings.skills_dir = _resolve_rel(settings.skills_dir) or settings.skills_dir
     settings.skill_manifest = _resolve_rel(settings.skill_manifest)
     settings.index_dir = _resolve_rel(settings.index_dir) or settings.index_dir
+    settings.embedding_queue_dir = _resolve_rel(settings.embedding_queue_dir)
     settings.sqlite_vector_path = _resolve_rel(settings.sqlite_vector_path)
     settings.openrouter_api_key_file = _resolve_rel(settings.openrouter_api_key_file)
     return settings

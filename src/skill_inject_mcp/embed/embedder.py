@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import asyncio
+import time
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from threading import RLock
@@ -11,6 +12,7 @@ from typing import Sequence
 import httpx
 import numpy as np
 
+from skill_inject_mcp.embed.admission import EmbeddingAdmission, EmbeddingUnavailable
 from skill_inject_mcp.text import words
 from skill_inject_mcp.timeouts import EMBEDDING_READ_TIMEOUT_S, http_timeout
 
@@ -69,31 +71,33 @@ class Embedder(ABC):
         return values
 
     @abstractmethod
-    def embed_documents(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def embed_documents(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         ...
 
-    def embed_queries(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def embed_queries(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         keys, hits, missing = self._query_hits(texts)
         if missing:
             originals = dict(zip(keys, texts))
-            values = self._embed_queries_uncached([originals[key] for key in missing])
+            uncached = [originals[key] for key in missing]
+            values = self._embed_queries_uncached(uncached, deadline=deadline)
             hits.update(self._publish_queries(missing, values))
         return [hits[key].copy() for key in keys]
 
-    async def aembed_queries(self, texts: Sequence[str]) -> list[np.ndarray]:
+    async def aembed_queries(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         keys, hits, missing = self._query_hits(texts)
         if missing:
             originals = dict(zip(keys, texts))
-            values = await self._aembed_queries_uncached([originals[key] for key in missing])
+            uncached = [originals[key] for key in missing]
+            values = await self._aembed_queries_uncached(uncached, deadline=deadline)
             hits.update(self._publish_queries(missing, values))
         return [hits[key].copy() for key in keys]
 
-    def _embed_queries_uncached(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def _embed_queries_uncached(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         raise NotImplementedError
 
-    async def _aembed_queries_uncached(self, texts: Sequence[str]) -> list[np.ndarray]:
+    async def _aembed_queries_uncached(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         # Fake/local embedders do no I/O. Remote implementations must override this.
-        return self._embed_queries_uncached(texts)
+        return self._embed_queries_uncached(texts, deadline=deadline)
 
     def close(self) -> None:
         pass
@@ -173,10 +177,10 @@ class FakeEmbedder(Embedder):
             vec[idx2] += 0.35 * sign
         return l2_normalize(vec)
 
-    def embed_documents(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def embed_documents(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         return [self._embed_one(t) for t in texts]
 
-    def _embed_queries_uncached(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def _embed_queries_uncached(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         # Apply instruction format then embed (Fake ignores instruction text noise lightly)
         return [self._embed_one(format_query(t)) for t in texts]
 
@@ -190,6 +194,7 @@ class OpenRouterEmbedder(Embedder):
         base_url: str = "https://openrouter.ai/api/v1",
         timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
         query_cache_size: int = 512,
+        admission: EmbeddingAdmission | None = None,
     ) -> None:
         super().__init__(dim, query_cache_size)
         self.api_key = api_key
@@ -197,6 +202,7 @@ class OpenRouterEmbedder(Embedder):
         self.dim = dim
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.admission = admission
         self._client_lock = RLock()
         self._client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
@@ -229,7 +235,38 @@ class OpenRouterEmbedder(Embedder):
             self._async_client = None
             self._async_loop = None
 
-    def _call(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def _effective_read_timeout(self, remaining: float | None) -> float:
+        return self.timeout_s if remaining is None else min(self.timeout_s, remaining)
+
+    def _post_sync(self, payload: dict, headers: dict, remaining: float | None) -> httpx.Response:
+        try:
+            return self._get_client().post(
+                f"{self.base_url}/embeddings",
+                json=payload,
+                headers=headers,
+                timeout=http_timeout(self._effective_read_timeout(remaining)),
+            )
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Embedding request timed out ({type(exc).__name__}; read_timeout_s={self.timeout_s:g}). "
+                "Check provider availability or SKILL_INJECT_EMBEDDING_TIMEOUT_S."
+            ) from exc
+
+    async def _post_async(self, payload: dict, headers: dict, remaining: float | None) -> httpx.Response:
+        try:
+            return await self._get_async_client().post(
+                f"{self.base_url}/embeddings",
+                json=payload,
+                headers=headers,
+                timeout=http_timeout(self._effective_read_timeout(remaining)),
+            )
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"Embedding request timed out ({type(exc).__name__}; read_timeout_s={self.timeout_s:g}). "
+                "Check provider availability or SKILL_INJECT_EMBEDDING_TIMEOUT_S."
+            ) from exc
+
+    def _call(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         payload = {
             "model": self.model,
             "input": list(texts),
@@ -239,16 +276,20 @@ class OpenRouterEmbedder(Embedder):
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
-        try:
-            resp = self._get_client().post(f"{self.base_url}/embeddings", json=payload, headers=headers,
-                                           timeout=http_timeout(self.timeout_s))
+        if self.admission is not None:
+            resp = self.admission.execute(
+                lambda remaining: self._post_sync(payload, headers, remaining),
+                deadline=deadline,
+            )
+        else:
+            remaining: float | None = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise EmbeddingUnavailable("deadline")
+            resp = self._post_sync(payload, headers, remaining)
             resp.raise_for_status()
-            data = resp.json()["data"]
-        except httpx.TimeoutException as exc:
-            raise RuntimeError(
-                f"Embedding request timed out ({type(exc).__name__}; read_timeout_s={self.timeout_s:g}). "
-                "Check provider availability or SKILL_INJECT_EMBEDDING_TIMEOUT_S."
-            ) from exc
+        data = resp.json()["data"]
         return self._decode(data, len(texts))
 
     def _decode(self, data, expected_count: int) -> list[np.ndarray]:
@@ -270,25 +311,42 @@ class OpenRouterEmbedder(Embedder):
             out.append(l2_normalize(arr))
         return out
 
-    def embed_documents(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def embed_documents(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         if not texts:
             return []
-        return self._call(texts)
+        return self._call(texts, deadline=deadline)
 
-    def _embed_queries_uncached(self, texts: Sequence[str]) -> list[np.ndarray]:
+    def _embed_queries_uncached(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
         if not texts:
             return []
         formatted = [format_query(t) for t in texts]
-        return self._call(formatted)
+        return self._call(formatted, deadline=deadline)
 
-    async def _aembed_queries_uncached(self, texts: Sequence[str]) -> list[np.ndarray]:
-        response = await self._get_async_client().post(
-            f"{self.base_url}/embeddings",
-            json={"model": self.model, "input": [format_query(t) for t in texts], "dimensions": self.dim},
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-            timeout=http_timeout(self.timeout_s),
-        )
-        response.raise_for_status()
+    async def _aembed_queries_uncached(self, texts: Sequence[str], *, deadline: float | None = None) -> list[np.ndarray]:
+        if not texts:
+            return []
+        payload = {
+            "model": self.model,
+            "input": [format_query(t) for t in texts],
+            "dimensions": self.dim,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.admission is not None:
+            response = await self.admission.aexecute(
+                lambda remaining: self._post_async(payload, headers, remaining),
+                deadline=deadline,
+            )
+        else:
+            remaining: float | None = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise EmbeddingUnavailable("deadline")
+            response = await self._post_async(payload, headers, remaining)
+            response.raise_for_status()
         return self._decode(response.json()["data"], len(texts))
 
 
@@ -301,6 +359,7 @@ def build_embedder(
     base_url: str = "https://openrouter.ai/api/v1",
     timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
     query_cache_size: int = 512,
+    admission: EmbeddingAdmission | None = None,
 ) -> tuple[Embedder, bool]:
     """Return the explicitly selected embedder; missing credentials are an error."""
     if use_fake:
@@ -308,4 +367,5 @@ def build_embedder(
     if not api_key or not api_key.strip():
         raise ValueError("OPENROUTER_API_KEY is required unless the fake embedder is explicitly enabled")
     return OpenRouterEmbedder(api_key=api_key, model=model, dim=dim, base_url=base_url,
-                              timeout_s=timeout_s, query_cache_size=query_cache_size), False
+                              timeout_s=timeout_s, query_cache_size=query_cache_size,
+                              admission=admission), False

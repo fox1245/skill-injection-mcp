@@ -346,14 +346,14 @@ def test_hook_paths_leave_no_generation_behind(tmp_path: Path, monkeypatch: pyte
         leased = engine.acquire_hook_snapshot()
         assert leased is not None
         try:
-            async def raise_error(texts):
+            async def raise_error(texts, deadline=None):
                 raise RuntimeError("embedding boom")
 
             monkeypatch.setattr(engine._snapshot.embedder, "aembed_queries", raise_error)
             res_err = asyncio.run(async_prompt_context(engine, "Install Python project dependencies with pip"))
             assert "BM25-only fallback" in res_err["hookSpecificOutput"]["additionalContext"]
 
-            async def raise_timeout(texts):
+            async def raise_timeout(texts, deadline=None):
                 await asyncio.sleep(1.0)
 
             monkeypatch.setattr(engine._snapshot.embedder, "aembed_queries", raise_timeout)

@@ -37,9 +37,9 @@ def test_exact_query_cache_deduplicates_misses_preserves_order_and_is_bounded(mo
 def test_query_cache_is_shared_between_async_hook_and_sync_resolve(monkeypatch):
     calls = []
     original = FakeEmbedder._embed_queries_uncached
-    def record(self, texts):
+    def record(self, texts, deadline=None):
         calls.append(list(texts))
-        return original(self, texts)
+        return original(self, texts, deadline=deadline)
     monkeypatch.setattr(FakeEmbedder, "_embed_queries_uncached", record)
     embedder = FakeEmbedder(dim=8)
     first = embedder.embed_queries(["same requirement"])[0]
@@ -55,7 +55,7 @@ def test_query_cache_is_shared_between_async_hook_and_sync_resolve(monkeypatch):
 def test_invalid_embedding_batch_does_not_publish_partial_cache(monkeypatch):
     embedder = FakeEmbedder(dim=2)
     calls = []
-    def broken(texts):
+    def broken(texts, deadline=None):
         calls.append(list(texts))
         return [np.array([1., 0.]), np.array([float("nan"), 0.])]
     monkeypatch.setattr(embedder, "_embed_queries_uncached", broken)
@@ -131,7 +131,7 @@ def test_cache_keeps_hash_keys_and_can_be_disabled(monkeypatch):
     uncached = FakeEmbedder(dim=2, query_cache_size=0)
     calls = []
     original = uncached._embed_queries_uncached
-    monkeypatch.setattr(uncached, "_embed_queries_uncached", lambda texts: (calls.append(list(texts)), original(texts))[1])
+    monkeypatch.setattr(uncached, "_embed_queries_uncached", lambda texts, deadline=None: (calls.append(list(texts)), original(texts, deadline=deadline))[1])
     uncached.embed_queries(["same"])
     uncached.embed_queries(["same"])
     assert calls == [["same"], ["same"]] and not uncached._query_cache

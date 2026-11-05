@@ -9,9 +9,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from skill_inject_mcp.embed.embedder import FakeEmbedder
 
 
+class _HighBacklogThreadingHTTPServer(ThreadingHTTPServer):
+    request_queue_size = 64
+
+
 class EmbeddingServer:
-    def __init__(self, delay_s: float = 0.0) -> None:
+    def __init__(
+        self,
+        delay_s: float = 0.0,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        responses: list[tuple[int, dict[str, str], dict | None]] | None = None,
+    ) -> None:
         self.delay_s = float(delay_s)
+        self.status_code = status_code
+        self.headers = dict(headers or {})
+        self._responses = list(responses or [])
         self._lock = threading.Lock()
         self._inputs: list[str] = []
         self._request_count = 0
@@ -63,16 +77,30 @@ class EmbeddingServer:
                     owner._inflight += 1
                     if owner._inflight > owner._max_inflight:
                         owner._max_inflight = owner._inflight
+                    scripted = owner._responses.pop(0) if owner._responses else None
                 try:
                     if owner.delay_s > 0:
                         time.sleep(owner.delay_s)
-                    embedder = FakeEmbedder(dim=dim)
-                    data = [
-                        {"index": idx, "embedding": embedder._embed_one(text).tolist()}
-                        for idx, text in enumerate(texts)
-                    ]
-                    body = json.dumps({"data": data}).encode("utf-8")
-                    self.send_response(200)
+                    if scripted is not None:
+                        code, resp_headers, custom_body = scripted
+                    else:
+                        code, resp_headers, custom_body = owner.status_code, owner.headers, None
+                    if custom_body is not None:
+                        response_payload = custom_body
+                    elif code == 200:
+                        embedder = FakeEmbedder(dim=dim)
+                        response_payload = {
+                            "data": [
+                                {"index": idx, "embedding": embedder._embed_one(text).tolist()}
+                                for idx, text in enumerate(texts)
+                            ]
+                        }
+                    else:
+                        response_payload = {"error": f"status {code}"}
+                    body = json.dumps(response_payload).encode("utf-8")
+                    self.send_response(code)
+                    for key, value in resp_headers.items():
+                        self.send_header(key, value)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
@@ -84,7 +112,7 @@ class EmbeddingServer:
             def log_message(self, format: str, *args: object) -> None:
                 return
 
-        self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._httpd = _HighBacklogThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             kwargs={"poll_interval": 0.02},

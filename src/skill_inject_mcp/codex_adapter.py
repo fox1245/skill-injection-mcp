@@ -6,8 +6,10 @@ import asyncio
 import queue
 import subprocess
 import threading
+import time
 from pathlib import Path
 
+from skill_inject_mcp.embed.admission import EmbeddingUnavailable
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import reciprocal_rank_fusion
 from skill_inject_mcp.retrieve.checks import lexical_gate
@@ -132,13 +134,18 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
         remaining = deadline - loop.time() - min(.05, engine.settings.hook_timeout_s * .1)
         if remaining > 0 and snapshot.embedder is not None:
             try:
-                vector = (await asyncio.wait_for(snapshot.embedder.aembed_queries([stripped]), remaining))[0]
+                call_deadline = time.monotonic() + remaining
+                vector = (await asyncio.wait_for(
+                    snapshot.embedder.aembed_queries([stripped], deadline=call_deadline), remaining,
+                ))[0]
                 dense = snapshot.dense.search_readonly(vector, top_k=width)
                 hits = reciprocal_rank_fusion(dense, sparse, k=engine.settings.rrf_k)
                 selected = [hit.skill_id for hit in hits[:3]]
                 status = "hybrid (query cache or live embedding)"
             except asyncio.TimeoutError:
                 pass
+            except EmbeddingUnavailable as exc:
+                status = f"BM25-only fallback (embedding unavailable: {exc.reason})"
             except Exception as exc:
                 status = f"BM25-only fallback (embedding unavailable: {type(exc).__name__})"
         if status.startswith("BM25-only"):

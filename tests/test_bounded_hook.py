@@ -77,7 +77,7 @@ def test_hook_does_not_wait_for_long_resolve_lock(engine):
 
 
 def test_timeout_omits_bm25_hits_without_positive_description_coverage(engine, monkeypatch):
-    async def slow(texts):
+    async def slow(texts, deadline=None):
         await asyncio.sleep(10)
     monkeypatch.setattr(engine._snapshot.embedder, "aembed_queries", slow)
     engine.settings.hook_timeout_s = .03
@@ -103,10 +103,10 @@ def test_retired_index_file_cleanup_does_not_delay_hook_reply(engine, monkeypatc
         snapshot = engine._snapshot
         original_embed = snapshot.embedder.aembed_queries
         original_dispose = snapshot._dispose
-        async def delayed(texts):
+        async def delayed(texts, deadline=None):
             entered.set()
             await release.wait()
-            return await original_embed(texts)
+            return await original_embed(texts, deadline=deadline)
         def slow_dispose():
             time.sleep(.3)
             original_dispose()

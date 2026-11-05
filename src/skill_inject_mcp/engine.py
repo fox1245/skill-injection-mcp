@@ -10,6 +10,7 @@ import logging
 import httpx
 
 from skill_inject_mcp.config import Settings, get_settings
+from skill_inject_mcp.embed.admission import build_admission
 from skill_inject_mcp.embed.embedder import build_embedder
 from skill_inject_mcp.index.locks import FileLock
 from skill_inject_mcp.index.snapshot import (
@@ -64,7 +65,19 @@ class SkillInjectEngine:
         return ("directory", Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve())
 
     def _get_embedder(self):
-        identity = (embedding_identity(self.settings), self.settings.embedding_timeout_s, self.settings.query_cache_size)
+        identity = (
+            embedding_identity(self.settings),
+            self.settings.embedding_timeout_s,
+            self.settings.query_cache_size,
+            self.settings.embedding_max_concurrency,
+            self.settings.embedding_queue_dir,
+            self.settings.embedding_queue_max_wait_s,
+            self.settings.embedding_max_retries,
+            tuple(self.settings.embedding_retry_statuses),
+            self.settings.embedding_retry_base_backoff_s,
+            self.settings.embedding_retry_max_wait_s,
+            self.settings.embedding_retry_jitter,
+        )
         with self._snapshot_guard:
             if identity not in self._embedders:
                 self._embedders[identity] = build_embedder(
@@ -72,6 +85,7 @@ class SkillInjectEngine:
                     model=self.settings.embedding_model, dim=self.settings.embedding_dim,
                     base_url=self.settings.embedding_base_url, timeout_s=self.settings.embedding_timeout_s,
                     query_cache_size=self.settings.query_cache_size,
+                    admission=None if self.settings.use_fake_embedder else build_admission(self.settings),
                 )
             return self._embedders[identity]
 

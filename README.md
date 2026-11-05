@@ -457,6 +457,22 @@ qwen/qwen3-embedding-8b
 
 개발 환경에서는 항상 동일한 결과를 생성하는 `FakeEmbedder`를 사용할 수 있습니다.
 
+임베딩 큐 및 재시도 설정:
+
+| Setting | Meaning |
+| --- | --- |
+| `SKILL_INJECT_EMBEDDING_MAX_CONCURRENCY` (`embedding_max_concurrency`) | 모든 프로세스가 공유하는 동시 임베딩 요청 슬롯 수 |
+| `SKILL_INJECT_EMBEDDING_QUEUE_DIR` (`embedding_queue_dir`) | 슬롯 락 파일을 저장하는 큐 디렉터리 (미지정 시 `<index_dir>/embedding-queue`) |
+| `SKILL_INJECT_EMBEDDING_QUEUE_MAX_WAIT_S` (`embedding_queue_max_wait_s`) | 별도 마감 시간이 없는 호출이 빈 슬롯을 기다리는 최대 시간(초) |
+| `SKILL_INJECT_EMBEDDING_MAX_RETRIES` (`embedding_max_retries`) | 재시도 대상 응답 수신 시 최대 재시도 횟수 |
+| `SKILL_INJECT_EMBEDDING_RETRY_STATUSES` (`embedding_retry_statuses`) | 재시도할 HTTP 상태 코드 목록 |
+| `SKILL_INJECT_EMBEDDING_RETRY_BASE_BACKOFF_S` (`embedding_retry_base_backoff_s`) | 지수 백오프의 기본 대기 시간(초) |
+| `SKILL_INJECT_EMBEDDING_RETRY_MAX_WAIT_S` (`embedding_retry_max_wait_s`) | 1회 재시도 대기 시간의 상한(초) |
+| `SKILL_INJECT_EMBEDDING_RETRY_JITTER` (`embedding_retry_jitter`) | 대기 시간에 곱해지는 추가 지터 비율 (`[0, 1]`) |
+| `SKILL_INJECT_LOCK_POLL_S` (`lock_poll_s`) | 슬롯 락 폴링 주기(초) |
+
+동일한 임베딩 서버를 공유하는 여러 설치 환경에서 `embedding_queue_dir` (`SKILL_INJECT_EMBEDDING_QUEUE_DIR`)을 같은 디렉터리로 지정하면 모든 설치가 하나의 큐를 공유합니다.
+
 ---
 
 # Offline Mode

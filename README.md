@@ -152,14 +152,14 @@ registry_snapshot
 
 ## Incremental Embedding
 
-변경되지 않은 스킬 문서는 다시 임베딩하지 않습니다.
+각 스킬 문서는 이름, 설명, 본문 앞부분(`SKILL_INJECT_INDEX_SUMMARY_CHARS`, 기본 1,200자), 태그 요약만 dense 임베딩하며(sparse BM25 인덱스는 전체 본문 유지), 변경되지 않은 스킬 문서는 다시 임베딩하지 않습니다.
 
 * 변경되지 않은 문서 → 기존 벡터 재사용
 * 변경된 문서 → 새로운 인덱스 생성
 * 인덱싱 실패 → 이전 정상 스냅샷 유지
 * 임베딩 배치 크기 → 기본 `32`
 
-서버를 재시작해도 캐시를 유지하도록 설정할 수도 있습니다.
+영구 임베딩 캐시(`SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true`)가 기본으로 켜져 있어 서버를 재시작해도 변경되지 않은 문서의 임베딩을 재사용합니다.
 
 ---
 
@@ -457,10 +457,16 @@ qwen/qwen3-embedding-8b
 
 개발 환경에서는 항상 동일한 결과를 생성하는 `FakeEmbedder`를 사용할 수 있습니다.
 
-임베딩 큐 및 재시도 설정:
+임베딩·엔드포인트·캐시·큐 및 재시도 설정:
 
 | Setting | Meaning |
 | --- | --- |
+| `SKILL_INJECT_INDEX_SUMMARY_CHARS` (`index_summary_chars`) | dense 임베딩에 포함할 스킬 본문 앞부분 최대 글자 수 (기본 `1200`, 변경 시 스냅샷 재구축) |
+| `SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE` (`persistent_embedding_cache`) | SQLite 기반 영구 임베딩 캐시 사용 여부 (기본 `true`) |
+| `SKILL_INJECT_EMBEDDING_BASE_URL` (`embedding_base_url`) | 임베딩 API 기본 URL (기본 `https://openrouter.ai/api/v1`) |
+| `SKILL_INJECT_EMBEDDING_API_KEY` (`embedding_api_key`) | 임베딩 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
+| `SKILL_INJECT_CHAT_BASE_URL` (`chat_base_url`) | 멀티쿼리 확장 및 semantic 검증용 채팅 API 기본 URL (기본 `https://openrouter.ai/api/v1`) |
+| `SKILL_INJECT_CHAT_API_KEY` (`chat_api_key`) | 멀티쿼리 확장 및 semantic 검증용 채팅 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
 | `SKILL_INJECT_EMBEDDING_MAX_CONCURRENCY` (`embedding_max_concurrency`) | 모든 프로세스가 공유하는 동시 임베딩 요청 슬롯 수 |
 | `SKILL_INJECT_EMBEDDING_QUEUE_DIR` (`embedding_queue_dir`) | 슬롯 락 파일을 저장하는 큐 디렉터리 (미지정 시 `<index_dir>/embedding-queue`) |
 | `SKILL_INJECT_EMBEDDING_QUEUE_MAX_WAIT_S` (`embedding_queue_max_wait_s`) | 별도 마감 시간이 없는 호출이 빈 슬롯을 기다리는 최대 시간(초) |
@@ -610,7 +616,7 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 
 # Timeout Configuration
 
-기본 HTTP 읽기 타임아웃:
+기본 HTTP 및 훅 타임아웃:
 
 | Setting                               | Default |
 | ------------------------------------- | ------: |
@@ -618,6 +624,11 @@ Hook은 참고용 후보를 제공하는 역할이며 실제 요구사항 검증
 | `SKILL_INJECT_EMBEDDING_TIMEOUT_S`    |    180s |
 | `SKILL_INJECT_MULTI_QUERY_TIMEOUT_S`  |     30s |
 | `SKILL_INJECT_VERIFICATION_TIMEOUT_S` |    120s |
+| `SKILL_INJECT_HTTP_CONNECT_TIMEOUT_S` (`http_connect_timeout_s`) |     10s |
+| `SKILL_INJECT_HTTP_WRITE_TIMEOUT_S` (`http_write_timeout_s`)     |     30s |
+| `SKILL_INJECT_HTTP_POOL_TIMEOUT_S` (`http_pool_timeout_s`)       |     10s |
+
+HTTP 연결(`http_connect_timeout_s`, 기본 10초), 쓰기(`http_write_timeout_s`, 기본 30초), 커넥션 풀 대기(`http_pool_timeout_s`, 기본 10초) 예산은 고정 상수가 아니라 설정에서 읽어 임베딩·멀티쿼리·semantic 검증 HTTP 호출에 전달됩니다.
 
 Codex 등록 권장값:
 
@@ -644,7 +655,7 @@ Codex 등록 권장값:
 * Semantic Search만으로 `supported` 판정을 만들기 위해서는 별도의 점수 기준을 충족해야 합니다.
 * RRF의 최대 점수보다 `constraints.min_score`를 높게 설정하면 모든 후보가 제거될 수 있습니다.
 * 인덱스 스냅샷은 기본적으로 프로세스 내부에서 유지됩니다.
-* Persistent Embedding Cache를 활성화하면 서버 재시작 이후에도 변경되지 않은 문서의 임베딩을 재사용할 수 있습니다.
+* Persistent Embedding Cache는 기본으로 활성화되어 있으며(`SKILL_INJECT_PERSISTENT_EMBEDDING_CACHE=true`), 서버 재시작 이후에도 변경되지 않은 문서의 임베딩을 재사용합니다.
 * `pytest`는 실제 HTTP 요청을 차단합니다.
 * 실제 모델 기반 평가는 별도의 Opt-in Live Evaluation으로 실행합니다.
 

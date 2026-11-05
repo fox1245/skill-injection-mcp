@@ -146,8 +146,10 @@ def test_startup_sweep_removes_only_orphans(tmp_path: Path) -> None:
 
     keep_dir = index_dir / "keep-me"
     keep_dir.mkdir(parents=True)
+    from skill_inject_mcp.index.cache import EmbeddingCache
+    EmbeddingCache(index_dir, ("test",), 4)
     cache_file = index_dir / "embedding-cache.sqlite"
-    cache_file.write_bytes(b"placeholder")
+    assert cache_file.exists()
 
     settings = Settings(
         _env_file=None,

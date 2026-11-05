@@ -7,10 +7,8 @@ from typing import Sequence
 
 import httpx
 
-from skill_inject_mcp.timeouts import MULTI_QUERY_READ_TIMEOUT_S, http_timeout
+from skill_inject_mcp.timeouts import http_timeout
 
-DEFAULT_MULTI_QUERY_MODEL = "openai/gpt-oss-120b"
-DEFAULT_TIMEOUT_S = MULTI_QUERY_READ_TIMEOUT_S
 # Prefer fast inference hosts when the model is available there (OpenRouter provider routing).
 DEFAULT_PROVIDER_ORDER = ["Cerebras", "Groq"]
 
@@ -86,9 +84,12 @@ def expand_queries(
     *,
     api_key: str | None,
     enabled: bool = True,
-    model: str = DEFAULT_MULTI_QUERY_MODEL,
-    base_url: str = "https://openrouter.ai/api/v1",
-    timeout_s: float = DEFAULT_TIMEOUT_S,
+    model: str,
+    base_url: str,
+    timeout_s: float,
+    connect_timeout_s: float,
+    write_timeout_s: float,
+    pool_timeout_s: float,
     provider_order: Sequence[str] | None = None,
     client: httpx.Client | None = None,
 ) -> MultiQueryResult:
@@ -134,16 +135,22 @@ def expand_queries(
         "X-Title": "skill-injection-mcp",
     }
 
+    budget = http_timeout(
+        timeout_s,
+        connect_timeout_s=connect_timeout_s,
+        write_timeout_s=write_timeout_s,
+        pool_timeout_s=pool_timeout_s,
+    )
     owns_client = client is None
     http = client
     try:
         if http is None:
-            http = httpx.Client(timeout=http_timeout(timeout_s))
+            http = httpx.Client(timeout=budget)
         resp = http.post(
             f"{base_url.rstrip('/')}/chat/completions",
             json=payload,
             headers=headers,
-            timeout=http_timeout(timeout_s),
+            timeout=budget,
         )
         resp.raise_for_status()
         body = resp.json()

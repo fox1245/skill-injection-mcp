@@ -31,12 +31,18 @@ class Settings(BaseSettings):
     index_lock_timeout_s: float = Field(default=300.0, gt=0, allow_inf_nan=False)
     lock_poll_s: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
+    embedding_api_key: str | None = None
+    chat_api_key: str | None = None
     embedding_model: str = "qwen/qwen3-embedding-8b"
     embedding_dim: int = Field(default=1024, ge=1)
     embedding_batch_size: int = Field(default=32, ge=1)
+    index_summary_chars: int = Field(default=1200, ge=1)
     query_cache_size: int = Field(default=512, ge=0)
     hook_timeout_s: float = Field(default=120.0, gt=0, allow_inf_nan=False)
     prompt_hook_enabled: bool = False
+    http_connect_timeout_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
+    http_write_timeout_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    http_pool_timeout_s: float = Field(default=10.0, gt=0, allow_inf_nan=False)
     embedding_timeout_s: float = Field(default=EMBEDDING_READ_TIMEOUT_S, gt=0, allow_inf_nan=False)
     embedding_max_concurrency: int = Field(default=2, ge=1)
     embedding_queue_dir: Path | None = None
@@ -46,8 +52,9 @@ class Settings(BaseSettings):
     embedding_retry_base_backoff_s: float = Field(default=0.5, gt=0, allow_inf_nan=False)
     embedding_retry_max_wait_s: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     embedding_retry_jitter: float = Field(default=0.2, ge=0.0, le=1.0, allow_inf_nan=False)
-    persistent_embedding_cache: bool = False
+    persistent_embedding_cache: bool = True
     embedding_base_url: str = "https://openrouter.ai/api/v1"
+    chat_base_url: str = "https://openrouter.ai/api/v1"
     use_fake_embedder: bool = False
     retrieval_mode: Literal["hybrid", "lexical"] = "hybrid"
     dense_backend: Literal["sqlite-vector", "numpy"] = "sqlite-vector"
@@ -96,9 +103,19 @@ class Settings(BaseSettings):
             return key.strip()
         return self.openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
 
+    def resolve_embedding_api_key(self) -> str | None:
+        if self.embedding_api_key and self.embedding_api_key.strip():
+            return self.embedding_api_key.strip()
+        return self.resolve_api_key()
+
+    def resolve_chat_api_key(self) -> str | None:
+        if self.chat_api_key and self.chat_api_key.strip():
+            return self.chat_api_key.strip()
+        return self.resolve_api_key()
+
     def multi_query_enabled(self) -> bool:
-        """True when multi-query is configured on and an API key is available."""
-        return self.retrieval_mode == "hybrid" and bool(self.multi_query) and bool(self.resolve_api_key())
+        """True when multi-query is configured on and a chat API key is available."""
+        return self.retrieval_mode == "hybrid" and bool(self.multi_query) and bool(self.resolve_chat_api_key())
 
 
 def get_settings(**overrides) -> Settings:

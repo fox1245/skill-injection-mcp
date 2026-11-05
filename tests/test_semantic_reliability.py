@@ -10,6 +10,16 @@ from skill_inject_mcp.config import Settings
 from skill_inject_mcp.retrieve.semantic import SemanticVerifier
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta
 
+_DEFAULTS = Settings(_env_file=None)
+VERIFY_KW = {
+    "model": _DEFAULTS.verification_model,
+    "base_url": _DEFAULTS.chat_base_url,
+    "timeout_s": _DEFAULTS.verification_timeout_s,
+    "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+    "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+    "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+}
+
 
 def candidate():
     return SkillMeta(skill_id="code", name="Frontend code", path="code/SKILL.md",
@@ -43,7 +53,7 @@ def test_truncation_retries_once_with_more_budget_and_unchanged_sources(truncate
     verifier = SemanticVerifier()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         result = verifier.verify("Build runnable code", [candidate()], api_key="test", client=client,
-                                 max_tokens=4096)
+                                 max_tokens=4096, **VERIFY_KW)
     assert [r["max_tokens"] for r in requests] == [4096, 8192]
     assert requests[0]["messages"] == requests[1]["messages"]
     assert requests[0]["response_format"] == requests[1]["response_format"]
@@ -65,7 +75,7 @@ def test_repeated_truncation_is_bounded_and_never_cached():
     verifier = SemanticVerifier()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         result = verifier.verify("Build code", [candidate()], api_key="test", client=client,
-                                 max_tokens=1024)
+                                 max_tokens=1024, **VERIFY_KW)
     assert [r["max_tokens"] for r in requests] == [1024, 2048]
     assert result.degraded and result.assessments["code"].assessment == "unknown"
     assert result.reason == "semantic_verifier_error:response_truncated"
@@ -81,7 +91,7 @@ def test_retry_can_be_disabled():
         return reply(finish="length")
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         result = SemanticVerifier().verify("Build code", [candidate()], api_key="test", client=client,
-                                           max_retries=0)
+                                           max_retries=0, **VERIFY_KW)
     assert len(calls) == 1 and not result.diagnostics[0].retrying
     assert result.assessments["code"].assessment == "unknown"
 
@@ -128,7 +138,7 @@ def test_non_truncation_failures_have_specific_codes_without_retries(defect, cod
             value["evidence"] = []
         return reply(value)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = SemanticVerifier().verify("Build code", [candidate()], api_key="test", client=client)
+        result = SemanticVerifier().verify("Build code", [candidate()], api_key="test", client=client, **VERIFY_KW)
     assert len(calls) == 1
     assert result.degraded and result.assessments["code"].assessment == "unknown"
     assert result.reason == f"semantic_verifier_error:{code}"
@@ -144,7 +154,7 @@ def test_failed_retry_does_not_reuse_the_first_attempts_apparent_support():
         raise httpx.ReadTimeout("SECRET: request credentials and private content", request=request)
     verifier = SemanticVerifier()
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = verifier.verify("Build code", [candidate()], api_key="SECRET-KEY", client=client)
+        result = verifier.verify("Build code", [candidate()], api_key="SECRET-KEY", client=client, **VERIFY_KW)
     assert len(calls) == 2 and result.degraded
     assert result.assessments["code"].assessment == "unknown"
     assert not verifier._cache
@@ -159,7 +169,7 @@ def test_one_invalid_candidate_keeps_batch_validation_atomic():
     with httpx.Client(transport=httpx.MockTransport(lambda request: reply(
         content=json.dumps({"results": [verdict(), invalid]})))) as client:
         verifier = SemanticVerifier()
-        result = verifier.verify("Build code", [candidate(), other], api_key="test", client=client)
+        result = verifier.verify("Build code", [candidate(), other], api_key="test", client=client, **VERIFY_KW)
     assert result.reason == "semantic_verifier_error:invalid_source_reference"
     assert all(a.assessment == "unknown" for a in result.assessments.values())
     assert not verifier._cache
@@ -175,7 +185,7 @@ def test_retry_still_enforces_source_ownership():
         invalid["evidence"] = [{"source_id": "invented"}]
         return reply(invalid)
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = SemanticVerifier().verify("Build code", [candidate()], api_key="test", client=client)
+        result = SemanticVerifier().verify("Build code", [candidate()], api_key="test", client=client, **VERIFY_KW)
     assert len(calls) == 2 and result.degraded
     assert result.assessments["code"].assessment == "unknown"
     assert [d.code for d in result.diagnostics] == ["response_truncated", "invalid_source_reference"]
@@ -187,7 +197,8 @@ def test_failure_diagnostics_do_not_echo_untrusted_response_fields():
             "message": {"content": "SECRET_CONTENT", "reasoning": "SECRET_REASONING"}}],
             "usage": {"prompt_tokens": "SECRET_USAGE", "completion_tokens_details": "SECRET_DETAILS"}})
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        result = SemanticVerifier().verify("PRIVATE_REQUIREMENT", [candidate()], api_key="SECRET_KEY", client=client)
+        result = SemanticVerifier().verify("PRIVATE_REQUIREMENT", [candidate()], api_key="SECRET_KEY",
+                                           client=client, **VERIFY_KW)
     assert "SECRET" not in repr(result)
     assert "PRIVATE_REQUIREMENT" not in repr(result)
     assert result.diagnostics[0].code == "unexpected_finish_reason"

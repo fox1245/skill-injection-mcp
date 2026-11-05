@@ -48,6 +48,20 @@ def _minimal_env(tmp_path: Path, **extra: str) -> dict[str, str]:
     return env
 
 
+def _build_test_embedder(settings: Settings, *, api_key: str, dim: int = 2, admission=None):
+    return build_embedder(
+        api_key=api_key,
+        model=settings.embedding_model,
+        dim=dim,
+        base_url=settings.embedding_base_url,
+        timeout_s=settings.embedding_timeout_s,
+        connect_timeout_s=settings.http_connect_timeout_s,
+        write_timeout_s=settings.http_write_timeout_s,
+        pool_timeout_s=settings.http_pool_timeout_s,
+        admission=admission,
+    )
+
+
 def _run_client_processes(
     tmp_path: Path,
     *,
@@ -165,7 +179,8 @@ def test_retry_after_honoured_and_capped(tmp_path: Path, monkeypatch: pytest.Mon
             embedding_retry_jitter=0.0,
         )
         admission = build_admission(settings, sleep=sleeps.append, now=lambda: fixed_now)
-        embedder, _ = build_embedder(
+        embedder, _ = _build_test_embedder(
+            settings,
             api_key="test-key",
             dim=2,
             admission=admission,
@@ -215,7 +230,7 @@ def test_deadline_stops_before_retry_wait_exceeding_remaining_budget(
         embedding_retry_jitter=0.0,
     )
     admission = build_admission(settings, clock=lambda: now[0], sleep=sleeps.append)
-    embedder, _ = build_embedder(api_key="secret-token-do-not-leak", dim=2, admission=admission)
+    embedder, _ = _build_test_embedder(settings, api_key="secret-token-do-not-leak", dim=2, admission=admission)
     try:
         with pytest.raises(EmbeddingUnavailable) as exc_info:
             embedder.embed_documents(["document"], deadline=now[0] + 1.0)
@@ -250,7 +265,7 @@ def test_retries_exhausted_and_non_retried_status_raises_immediately(
         embedding_retry_jitter=0.0,
     )
     admission = build_admission(settings, sleep=sleeps.append)
-    embedder, _ = build_embedder(api_key="test-key", dim=2, admission=admission)
+    embedder, _ = _build_test_embedder(settings, api_key="test-key", dim=2, admission=admission)
     try:
         with pytest.raises(EmbeddingUnavailable) as exc_info:
             embedder.embed_documents(["document"])
@@ -295,7 +310,7 @@ def test_slot_wait_deadline_and_async_non_blocking_acquire(
     )
     admission = build_admission(settings)
     assert admission.queue is not None
-    embedder, _ = build_embedder(api_key="test-key", dim=2, admission=admission)
+    embedder, _ = _build_test_embedder(settings, api_key="test-key", dim=2, admission=admission)
     held_locks = [FileLock(path) for path in admission.queue.slot_paths()]
     for lock in held_locks:
         assert lock.try_acquire()
@@ -357,7 +372,7 @@ def test_slot_is_released_on_every_exit(tmp_path: Path, monkeypatch: pytest.Monk
     )
     admission = build_admission(settings)
     assert admission.queue is not None
-    embedder, _ = build_embedder(api_key="test-key", dim=2, admission=admission)
+    embedder, _ = _build_test_embedder(settings, api_key="test-key", dim=2, admission=admission)
 
     def assert_all_slots_free() -> None:
         assert admission.queue is not None

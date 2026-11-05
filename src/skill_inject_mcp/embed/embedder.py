@@ -14,7 +14,7 @@ import numpy as np
 
 from skill_inject_mcp.embed.admission import EmbeddingAdmission, EmbeddingUnavailable
 from skill_inject_mcp.text import words
-from skill_inject_mcp.timeouts import EMBEDDING_READ_TIMEOUT_S, http_timeout
+from skill_inject_mcp.timeouts import http_timeout
 
 
 def format_query(query: str, *, task: str = "Given a skill requirement, retrieve matching agent skills") -> str:
@@ -189,10 +189,14 @@ class OpenRouterEmbedder(Embedder):
     def __init__(
         self,
         api_key: str,
-        model: str = "qwen/qwen3-embedding-8b",
+        *,
+        model: str,
         dim: int = 1024,
-        base_url: str = "https://openrouter.ai/api/v1",
-        timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
+        base_url: str,
+        timeout_s: float,
+        connect_timeout_s: float,
+        write_timeout_s: float,
+        pool_timeout_s: float,
         query_cache_size: int = 512,
         admission: EmbeddingAdmission | None = None,
     ) -> None:
@@ -202,16 +206,27 @@ class OpenRouterEmbedder(Embedder):
         self.dim = dim
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self.connect_timeout_s = connect_timeout_s
+        self.write_timeout_s = write_timeout_s
+        self.pool_timeout_s = pool_timeout_s
         self.admission = admission
         self._client_lock = RLock()
         self._client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
         self._async_loop = None
 
+    def _timeout(self, read_timeout_s: float) -> httpx.Timeout:
+        return http_timeout(
+            read_timeout_s,
+            connect_timeout_s=self.connect_timeout_s,
+            write_timeout_s=self.write_timeout_s,
+            pool_timeout_s=self.pool_timeout_s,
+        )
+
     def _get_client(self) -> httpx.Client:
         with self._client_lock:
             if self._client is None:
-                self._client = httpx.Client(timeout=http_timeout(self.timeout_s))
+                self._client = httpx.Client(timeout=self._timeout(self.timeout_s))
             return self._client
 
     def _get_async_client(self) -> httpx.AsyncClient:
@@ -219,7 +234,7 @@ class OpenRouterEmbedder(Embedder):
         if self._async_client is not None and self._async_loop is not loop:
             raise RuntimeError("Close the embedding async client before switching event loops")
         if self._async_client is None:
-            self._async_client = httpx.AsyncClient(timeout=http_timeout(self.timeout_s))
+            self._async_client = httpx.AsyncClient(timeout=self._timeout(self.timeout_s))
             self._async_loop = loop
         return self._async_client
 
@@ -244,7 +259,7 @@ class OpenRouterEmbedder(Embedder):
                 f"{self.base_url}/embeddings",
                 json=payload,
                 headers=headers,
-                timeout=http_timeout(self._effective_read_timeout(remaining)),
+                timeout=self._timeout(self._effective_read_timeout(remaining)),
             )
         except httpx.TimeoutException as exc:
             raise RuntimeError(
@@ -258,7 +273,7 @@ class OpenRouterEmbedder(Embedder):
                 f"{self.base_url}/embeddings",
                 json=payload,
                 headers=headers,
-                timeout=http_timeout(self._effective_read_timeout(remaining)),
+                timeout=self._timeout(self._effective_read_timeout(remaining)),
             )
         except httpx.TimeoutException as exc:
             raise RuntimeError(
@@ -354,10 +369,13 @@ def build_embedder(
     *,
     api_key: str | None,
     use_fake: bool = False,
-    model: str = "qwen/qwen3-embedding-8b",
+    model: str,
     dim: int = 1024,
-    base_url: str = "https://openrouter.ai/api/v1",
-    timeout_s: float = EMBEDDING_READ_TIMEOUT_S,
+    base_url: str,
+    timeout_s: float,
+    connect_timeout_s: float,
+    write_timeout_s: float,
+    pool_timeout_s: float,
     query_cache_size: int = 512,
     admission: EmbeddingAdmission | None = None,
 ) -> tuple[Embedder, bool]:
@@ -366,6 +384,15 @@ def build_embedder(
         return FakeEmbedder(dim=dim, query_cache_size=query_cache_size), False
     if not api_key or not api_key.strip():
         raise ValueError("OPENROUTER_API_KEY is required unless the fake embedder is explicitly enabled")
-    return OpenRouterEmbedder(api_key=api_key, model=model, dim=dim, base_url=base_url,
-                              timeout_s=timeout_s, query_cache_size=query_cache_size,
-                              admission=admission), False
+    return OpenRouterEmbedder(
+        api_key=api_key,
+        model=model,
+        dim=dim,
+        base_url=base_url,
+        timeout_s=timeout_s,
+        connect_timeout_s=connect_timeout_s,
+        write_timeout_s=write_timeout_s,
+        pool_timeout_s=pool_timeout_s,
+        query_cache_size=query_cache_size,
+        admission=admission,
+    ), False

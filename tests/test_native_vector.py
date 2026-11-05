@@ -9,12 +9,22 @@ from skill_inject_mcp.config import Settings
 from skill_inject_mcp.embed.embedder import build_embedder, OpenRouterEmbedder, FakeEmbedder
 from skill_inject_mcp.index.vector import build_vector_index
 
+_DEFAULTS = Settings(_env_file=None)
+EMBEDDER_KW = {
+    "model": _DEFAULTS.embedding_model,
+    "base_url": _DEFAULTS.embedding_base_url,
+    "timeout_s": _DEFAULTS.embedding_timeout_s,
+    "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+    "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+    "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+}
+
 
 def test_missing_key_does_not_silently_use_fake():
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
-        build_embedder(api_key=None, use_fake=False)
-    assert isinstance(build_embedder(api_key="test", use_fake=False)[0], OpenRouterEmbedder)
-    assert isinstance(build_embedder(api_key=None, use_fake=True)[0], FakeEmbedder)
+        build_embedder(api_key=None, use_fake=False, **EMBEDDER_KW)
+    assert isinstance(build_embedder(api_key="test", use_fake=False, **EMBEDDER_KW)[0], OpenRouterEmbedder)
+    assert isinstance(build_embedder(api_key=None, use_fake=True, **EMBEDDER_KW)[0], FakeEmbedder)
 
 
 def test_shared_key_file_is_authoritative(tmp_path, monkeypatch):

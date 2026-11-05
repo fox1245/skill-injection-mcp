@@ -7,7 +7,25 @@ import httpx
 import numpy as np
 import pytest
 
+from skill_inject_mcp.config import Settings
 from skill_inject_mcp.embed.embedder import FakeEmbedder, OpenRouterEmbedder
+
+_DEFAULTS = Settings(_env_file=None)
+
+
+def _make_remote_embedder(**overrides) -> OpenRouterEmbedder:
+    params = {
+        "api_key": "test",
+        "model": _DEFAULTS.embedding_model,
+        "dim": 2,
+        "base_url": _DEFAULTS.embedding_base_url,
+        "timeout_s": _DEFAULTS.embedding_timeout_s,
+        "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+        "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+        "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+    }
+    params.update(overrides)
+    return OpenRouterEmbedder(**params)
 
 
 def test_exact_query_cache_deduplicates_misses_preserves_order_and_is_bounded(monkeypatch):
@@ -19,7 +37,7 @@ def test_exact_query_cache_deduplicates_misses_preserves_order_and_is_bounded(mo
             {"index": i, "embedding": [1., float(len(text))]} for i, text in enumerate(inputs)
         ]})
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
-    embedder = OpenRouterEmbedder(api_key="test", dim=2, query_cache_size=2)
+    embedder = _make_remote_embedder(query_cache_size=2)
     try:
         vectors = embedder.embed_queries(["alpha", "beta", "alpha"])
         assert len(calls) == 1 and len(calls[0]) == 2
@@ -71,7 +89,7 @@ def test_model_change_does_not_reuse_previous_query_vector(monkeypatch):
         models.append(json.loads(request.content)["model"])
         return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1., 0.]}]})
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
-    embedder = OpenRouterEmbedder(api_key="test", dim=2)
+    embedder = _make_remote_embedder()
     try:
         embedder.embed_queries(["same query"])
         embedder.model = "different-model"
@@ -92,7 +110,7 @@ def test_sync_http_client_is_reused_and_closed(monkeypatch):
             super().__init__(**kwargs)
             clients.append(self)
     monkeypatch.setattr(httpx, "Client", TrackingClient)
-    embedder = OpenRouterEmbedder(api_key="test", dim=2)
+    embedder = _make_remote_embedder()
     embedder.embed_documents(["document"])
     embedder.embed_queries(["first"])
     embedder.embed_queries(["second"])
@@ -113,7 +131,7 @@ def test_async_http_client_is_reused_and_closed(monkeypatch):
             clients.append(self)
     monkeypatch.setattr(httpx, "AsyncClient", TrackingClient)
     async def run():
-        embedder = OpenRouterEmbedder(api_key="test", dim=2)
+        embedder = _make_remote_embedder()
         try:
             await embedder.aembed_queries(["first"])
             await embedder.aembed_queries(["second"])

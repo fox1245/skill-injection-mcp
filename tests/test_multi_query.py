@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -18,10 +18,24 @@ from skill_inject_mcp.schemas import (
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "fixtures" / "skills"
+_DEFAULTS = Settings(_env_file=None)
+
+
+def _expand(*args, **kwargs):
+    defaults = {
+        "model": _DEFAULTS.multi_query_model,
+        "base_url": _DEFAULTS.chat_base_url,
+        "timeout_s": _DEFAULTS.multi_query_timeout_s,
+        "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+        "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+        "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+    }
+    defaults.update(kwargs)
+    return expand_queries(*args, **defaults)
 
 
 def test_expand_queries_no_key_returns_original_only():
-    mq = expand_queries(
+    mq = _expand(
         "Install Python packages with pip",
         None,
         api_key=None,
@@ -33,7 +47,7 @@ def test_expand_queries_no_key_returns_original_only():
 
 
 def test_expand_queries_disabled_returns_original():
-    mq = expand_queries(
+    mq = _expand(
         "BM25 sparse search",
         "FTS5PorterTokenXyz",
         api_key="sk-test",
@@ -59,7 +73,7 @@ def test_expand_queries_mock_llm_merges_original_first():
         )
     )
     client = httpx.Client(transport=transport)
-    mq = expand_queries(
+    mq = _expand(
         "Install Python packages with pip",
         None,
         api_key="sk-test",
@@ -78,7 +92,7 @@ def test_expand_queries_timeout_degrades():
         raise httpx.TimeoutException("slow", request=request)
 
     client = httpx.Client(transport=httpx.MockTransport(_raise))
-    mq = expand_queries(
+    mq = _expand(
         "Install packages",
         None,
         api_key="sk-test",

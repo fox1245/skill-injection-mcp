@@ -15,6 +15,27 @@ from skill_inject_mcp.retrieve.semantic import SemanticVerifier
 from skill_inject_mcp.schemas import SkillMeta
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "skills"
+_DEFAULTS = Settings(_env_file=None)
+_HTTP_BUDGET_KW = {
+    "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+    "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+    "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+}
+_EMBEDDER_KW = {
+    "model": _DEFAULTS.embedding_model,
+    "base_url": _DEFAULTS.embedding_base_url,
+    **_HTTP_BUDGET_KW,
+}
+_EXPAND_KW = {
+    "model": _DEFAULTS.multi_query_model,
+    "base_url": _DEFAULTS.chat_base_url,
+    **_HTTP_BUDGET_KW,
+}
+_VERIFY_KW = {
+    "model": _DEFAULTS.verification_model,
+    "base_url": _DEFAULTS.chat_base_url,
+    **_HTTP_BUDGET_KW,
+}
 
 
 @pytest.mark.parametrize("method", ["embed_documents", "embed_queries"])
@@ -28,7 +49,12 @@ def test_embedding_http_request_uses_configured_read_budget(monkeypatch, method,
             {"index": i, "embedding": [1.0, 0.0]} for i in range(len(inputs))
         ]})
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
-    embedder, degraded = build_embedder(api_key="test", dim=2, timeout_s=read_timeout)
+    embedder, degraded = build_embedder(
+        api_key="test",
+        dim=2,
+        timeout_s=read_timeout,
+        **_EMBEDDER_KW,
+    )
     vectors = getattr(embedder, method)(["Install packages"])
     assert len(vectors) == 1
     assert seen == [{"connect": 10.0, "read": read_timeout, "write": 30.0, "pool": 10.0}]
@@ -60,7 +86,12 @@ def test_embedding_timeout_names_budget_without_exposing_credentials(monkeypatch
     def fail(transport, request):
         raise httpx.ReadTimeout("simulated outage", request=request)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", fail)
-    embedder, _ = build_embedder(api_key="secret-test-only", dim=2, timeout_s=246)
+    embedder, _ = build_embedder(
+        api_key="secret-test-only",
+        dim=2,
+        timeout_s=246,
+        **_EMBEDDER_KW,
+    )
     with pytest.raises(RuntimeError, match="read_timeout_s=246") as error:
         embedder.embed_queries(["Install packages"])
     assert "ReadTimeout" in str(error.value)
@@ -75,7 +106,13 @@ def test_multi_query_read_budget_overrides_injected_client_default():
             {"message": {"content": '["pip install", "python dependencies"]'}}
         ]})
     with httpx.Client(transport=httpx.MockTransport(respond), timeout=1) as client:
-        result = expand_queries("Install packages", api_key="test", timeout_s=37, client=client)
+        result = expand_queries(
+            "Install packages",
+            api_key="test",
+            timeout_s=37,
+            client=client,
+            **_EXPAND_KW,
+        )
     assert not result.skipped
     assert seen == [{"connect": 10.0, "read": 37, "write": 30.0, "pool": 10.0}]
 
@@ -94,8 +131,14 @@ def test_semantic_read_budget_overrides_injected_client_default():
     skill = SkillMeta(skill_id="installer", name="Installer", description="Install packages",
                       body="Installation instructions", path="installer/SKILL.md")
     with httpx.Client(transport=httpx.MockTransport(respond), timeout=1) as client:
-        result = SemanticVerifier().verify("Install packages", [skill], api_key="test",
-                                            timeout_s=144, client=client)
+        result = SemanticVerifier().verify(
+            "Install packages",
+            [skill],
+            api_key="test",
+            timeout_s=144,
+            client=client,
+            **_VERIFY_KW,
+        )
     assert result.assessments["installer"].matched
     assert seen == [{"connect": 10.0, "read": 144, "write": 30.0, "pool": 10.0}]
 

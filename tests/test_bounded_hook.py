@@ -8,11 +8,22 @@ import time
 import httpx
 
 from skill_inject_mcp.codex_adapter import async_prompt_context
+from skill_inject_mcp.config import Settings
 from skill_inject_mcp.embed.embedder import OpenRouterEmbedder
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest
 
 
 QUERY = "Install Python project dependencies with pip"
+_DEFAULTS = Settings(_env_file=None)
+_EMBEDDER_KW = {
+    "model": _DEFAULTS.embedding_model,
+    "dim": _DEFAULTS.embedding_dim,
+    "base_url": _DEFAULTS.embedding_base_url,
+    "timeout_s": _DEFAULTS.embedding_timeout_s,
+    "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
+    "write_timeout_s": _DEFAULTS.http_write_timeout_s,
+    "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+}
 
 
 def context(result):
@@ -31,7 +42,7 @@ def test_timed_out_http_request_is_cancelled_and_does_not_block_followup(engine)
                 finally:
                     cancelled.set()
             return httpx.Response(200, json={"data": [{"index": 0, "embedding": [1.] + [0.] * 1023}]})
-        remote = OpenRouterEmbedder(api_key="test", dim=1024)
+        remote = OpenRouterEmbedder(api_key="test", **_EMBEDDER_KW)
         remote._async_client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
         remote._async_loop = asyncio.get_running_loop()
         snapshot = engine._snapshot

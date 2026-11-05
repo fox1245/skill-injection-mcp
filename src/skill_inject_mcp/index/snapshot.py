@@ -31,6 +31,13 @@ def embedding_identity(settings: Settings) -> tuple:
     )
 
 
+def index_identity(settings: Settings) -> tuple:
+    base = embedding_identity(settings)
+    if settings.retrieval_mode == "lexical":
+        return base
+    return (base, ("summary_chars", settings.index_summary_chars))
+
+
 def fingerprint(registry: SkillRegistry, root: Path, identity: tuple) -> str:
     data = {
         "root": str(root.resolve()), "embedding": identity,
@@ -171,7 +178,7 @@ def build_snapshot(
     previous: IndexSnapshot | None,
     *, embedder_state: tuple[Embedder, bool] | None = None,
 ) -> IndexSnapshot:
-    identity = embedding_identity(settings)
+    identity = index_identity(settings)
     if settings.retrieval_mode == "lexical":
         index_root = Path(settings.index_dir).resolve()
         directory, lease = _create_generation(index_root)
@@ -195,33 +202,48 @@ def build_snapshot(
         cached = dict(previous.vectors)
     else:
         embedder, degraded = embedder_state or build_embedder(
-            api_key=settings.resolve_api_key(), use_fake=settings.use_fake_embedder,
-            model=settings.embedding_model, dim=settings.embedding_dim,
-            base_url=settings.embedding_base_url, timeout_s=settings.embedding_timeout_s,
+            api_key=settings.resolve_embedding_api_key(),
+            use_fake=settings.use_fake_embedder,
+            model=settings.embedding_model,
+            dim=settings.embedding_dim,
+            base_url=settings.embedding_base_url,
+            timeout_s=settings.embedding_timeout_s,
+            connect_timeout_s=settings.http_connect_timeout_s,
+            write_timeout_s=settings.http_write_timeout_s,
+            pool_timeout_s=settings.http_pool_timeout_s,
             query_cache_size=settings.query_cache_size,
             admission=None if settings.use_fake_embedder else build_admission(settings),
         )
         cached = {}
     skills = registry.all()
+    summary_chars = settings.index_summary_chars
     documents = {
-        s.skill_id: f"{s.name}\n{s.description}\n{s.body}\n{' '.join(s.tags)}"
+        s.skill_id: f"{s.name}\n{s.description}\n{s.body[:summary_chars]}\n{' '.join(s.tags)}"
         for s in skills
     }
     hashes = {sid: hashlib.sha256(text.encode()).hexdigest() for sid, text in documents.items()}
-    disk_cache = EmbeddingCache(Path(settings.index_dir), identity, settings.embedding_dim) if settings.persistent_embedding_cache else None
-    pending = {}
+    disk_cache = (
+        EmbeddingCache(Path(settings.index_dir), embedding_identity(settings), settings.embedding_dim)
+        if settings.persistent_embedding_cache else None
+    )
     vectors = {}
+    missing_sids = []
     for sid, digest in hashes.items():
         if digest in cached:
             vectors[digest] = cached[digest]
         else:
-            stored = disk_cache.get(digest) if disk_cache else None
-            if stored is not None:
-                vectors[digest] = stored
-            else:
-                pending[digest] = documents[sid]
+            missing_sids.append(sid)
+    if missing_sids and disk_cache is not None:
+        stored = disk_cache.get_many([hashes[sid] for sid in missing_sids])
+        vectors.update(stored)
+    pending = {}
+    for sid in missing_sids:
+        digest = hashes[sid]
+        if digest not in vectors:
+            pending[digest] = documents[sid]
     # Complete remote work before creating or touching any live index files.
     items = list(pending.items())
+    newly_embedded: dict[str, np.ndarray] = {}
     for offset in range(0, len(items), settings.embedding_batch_size):
         batch = items[offset:offset + settings.embedding_batch_size]
         embedded = embedder.embed_documents([text for _, text in batch])
@@ -231,9 +253,11 @@ def build_snapshot(
             array = np.asarray(vector, dtype=np.float64)
             if array.shape != (settings.embedding_dim,) or not np.isfinite(array).all():
                 raise ValueError("Embedding response has invalid shape or non-finite values")
-            vectors[digest] = array.copy()
-            if disk_cache is not None:
-                disk_cache.put(digest, vectors[digest])
+            copied = array.copy()
+            vectors[digest] = copied
+            newly_embedded[digest] = copied
+    if newly_embedded and disk_cache is not None:
+        disk_cache.put_many(newly_embedded)
 
     index_root = Path(settings.index_dir).resolve()
     directory, lease = _create_generation(index_root)

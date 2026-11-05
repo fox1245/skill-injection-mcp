@@ -116,7 +116,11 @@ def test_database_failure_preserves_live_snapshot_and_cleans_candidate(harness, 
     with pytest.raises(RuntimeError, match="database"):
         engine.reindex()
     assert engine._snapshot is previous
-    assert set(previous.index_root.iterdir()) == {previous.directory, previous.index_root / "build.lock"}
+    assert set(previous.index_root.iterdir()) == {
+        previous.directory,
+        previous.index_root / "build.lock",
+        previous.index_root / "embedding-cache.sqlite",
+    }
     assert engine.sparse.count() == 2
 
 

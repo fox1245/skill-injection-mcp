@@ -26,12 +26,15 @@ def main(argv: list[str]) -> int:
     settings = Settings(_env_file=None)
     admission = None if disable_queue else build_admission(settings)
     embedder, _ = build_embedder(
-        api_key=settings.resolve_api_key(),
+        api_key=settings.resolve_embedding_api_key(),
         use_fake=False,
         model=settings.embedding_model,
         dim=settings.embedding_dim,
         base_url=settings.embedding_base_url,
         timeout_s=settings.embedding_timeout_s,
+        connect_timeout_s=settings.http_connect_timeout_s,
+        write_timeout_s=settings.http_write_timeout_s,
+        pool_timeout_s=settings.http_pool_timeout_s,
         query_cache_size=settings.query_cache_size,
         admission=admission,
     )

@@ -141,8 +141,14 @@ def test_cold_hook_returns_without_waiting_for_background_index(engine, monkeypa
         started = time.monotonic()
         result = asyncio.run(async_prompt_context(cold, QUERY))
         assert time.monotonic() - started < .3
-        assert "unavailable" in context(result)
+        assert "unavailable; no published index snapshot is ready" in context(result)
+        assert not entered.is_set()
+        cold.request_background_refresh()
         assert entered.wait(1)
+        started = time.monotonic()
+        while_building = asyncio.run(async_prompt_context(cold, QUERY))
+        assert time.monotonic() - started < .3
+        assert "unavailable; no published index snapshot is ready" in context(while_building)
     finally:
         release.set()
         cold.close()
@@ -153,10 +159,13 @@ def test_explicit_tool_skill_directory_does_not_leak_into_global_hook(engine, tm
     path.parent.mkdir(parents=True)
     path.write_text("---\nname: private-fixture\ndescription: Install packages\n---\nInstall packages", encoding="utf-8")
     engine.ensure_index(path.parent.parent)
-    monkeypatch.setattr(engine, "request_background_refresh", lambda: None)
+    monkeypatch.setattr(
+        engine, "request_background_refresh",
+        lambda: (_ for _ in ()).throw(AssertionError("Hook must not request background refresh")),
+    )
     result = asyncio.run(async_prompt_context(engine, QUERY))
     assert "private-fixture" not in context(result)
-    assert "unavailable" in context(result)
+    assert "unavailable; no published index snapshot is ready" in context(result)
 
 
 def test_failed_refresh_uses_explicit_last_known_catalog(engine, monkeypatch):

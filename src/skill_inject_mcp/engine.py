@@ -11,7 +11,13 @@ import httpx
 
 from skill_inject_mcp.config import Settings, get_settings
 from skill_inject_mcp.embed.embedder import build_embedder
-from skill_inject_mcp.index.snapshot import build_snapshot, embedding_identity, fingerprint
+from skill_inject_mcp.index.locks import FileLock
+from skill_inject_mcp.index.snapshot import (
+    build_snapshot,
+    embedding_identity,
+    fingerprint,
+    sweep_orphan_generations,
+)
 from skill_inject_mcp.registry.scan import SkillRegistry
 from skill_inject_mcp.registry.layer import classify_requirement_layer, partition_hits
 from skill_inject_mcp.registry.signature import source_signature
@@ -50,6 +56,7 @@ class SkillInjectEngine:
         self._last_refresh_error = None
         self._closed = False
         self._cleanup_jobs = set()
+        self._orphans_swept = False
 
     def _selection(self, skills_dir: Path | None = None) -> tuple[str, Path]:
         if skills_dir is None and self.settings.skill_manifest is not None:
@@ -104,28 +111,55 @@ class SkillInjectEngine:
             self._source_signature = signature
             self._snapshot.source_signature = signature
             return self._snapshot.info()
-        candidate = build_snapshot(
-            self.settings, registry, root, snapshot_id, self._snapshot,
-            embedder_state=self._get_embedder() if self.settings.retrieval_mode == "hybrid" else None,
-        )
-        retriever = HybridRetriever(
-            sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
-            skills=registry.skills, rrf_k=self.settings.rrf_k,
-            retrieve_top_k=self.settings.retrieve_top_k,
-        )
-        candidate.source_signature = signature
-        with self._snapshot_guard:
-            previous = self._snapshot
-            self._snapshot = candidate
-            self._source_signature = signature
-        self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
-        self.embedder = candidate.embedder
-        self.embedder_degraded = candidate.embedder_degraded
-        self.dense_backend, self.retriever = candidate.backend, retriever
-        self._indexed = True
-        if previous is not None:
-            previous.close()
-        return candidate.info()
+        index_root = Path(self.settings.index_dir).resolve()
+        build_lock = FileLock(index_root / "build.lock")
+        try:
+            build_lock.acquire(
+                timeout_s=self.settings.index_lock_timeout_s,
+                poll_s=self.settings.lock_poll_s,
+            )
+        except TimeoutError as exc:
+            raise RuntimeError(
+                f"Timed out waiting for index build lock: {build_lock.path} "
+                f"(timeout_s={self.settings.index_lock_timeout_s:g})"
+            ) from exc
+        try:
+            if not self._orphans_swept:
+                sweep_orphan_generations(index_root, build_lock)
+                self._orphans_swept = True
+            candidate = build_snapshot(
+                self.settings, registry, root, snapshot_id, self._snapshot,
+                embedder_state=self._get_embedder() if self.settings.retrieval_mode == "hybrid" else None,
+            )
+        finally:
+            build_lock.release()
+        published = False
+        previous = None
+        try:
+            retriever = HybridRetriever(
+                sparse=candidate.sparse, dense=candidate.dense, embedder=candidate.embedder,
+                skills=registry.skills, rrf_k=self.settings.rrf_k,
+                retrieve_top_k=self.settings.retrieve_top_k,
+            )
+            candidate.source_signature = signature
+            with self._snapshot_guard:
+                if self._closed:
+                    raise RuntimeError("Skill engine is closed")
+                previous = self._snapshot
+                self._snapshot = candidate
+                self._source_signature = signature
+                published = True
+            self.registry, self.sparse, self.dense = registry, candidate.sparse, candidate.dense
+            self.embedder = candidate.embedder
+            self.embedder_degraded = candidate.embedder_degraded
+            self.dense_backend, self.retriever = candidate.backend, retriever
+            self._indexed = True
+            return candidate.info()
+        finally:
+            if not published:
+                candidate.close()
+            if previous is not None:
+                previous.close()
 
     def close(self) -> None:
         with self._lock:
@@ -188,7 +222,6 @@ class SkillInjectEngine:
                 return "current"
         except (OSError, ValueError, KeyError, TypeError):
             pass
-        self.request_background_refresh()
         return "last-known"
 
     def request_background_refresh(self) -> None:

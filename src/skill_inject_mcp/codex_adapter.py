@@ -119,10 +119,9 @@ async def _discover_prompt_context(engine: SkillInjectEngine, prompt: str) -> di
     try:
         snapshot = engine.acquire_hook_snapshot()
         if snapshot is None:
-            engine.request_background_refresh()
             if engine._last_refresh_error:
                 return _hook_result([], f"unavailable; catalog refresh failed ({engine._last_refresh_error})")
-            return _hook_result([], "unavailable; index warmup requested")
+            return _hook_result([], "unavailable; no published index snapshot is ready")
         catalog = engine.hook_catalog_state(snapshot)
         width = engine.settings.retrieve_top_k
         sparse = snapshot.sparse.search_readonly(stripped, top_k=width)

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
         default_factory=lambda: Path(".skill_inject_index"),
         description="Directory for SQLite indexes",
     )
+    index_lock_timeout_s: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+    lock_poll_s: float = Field(default=0.05, gt=0, allow_inf_nan=False)
     openrouter_api_key: str | None = Field(default=None, alias="OPENROUTER_API_KEY")
     embedding_model: str = "qwen/qwen3-embedding-8b"
     embedding_dim: int = Field(default=1024, ge=1)

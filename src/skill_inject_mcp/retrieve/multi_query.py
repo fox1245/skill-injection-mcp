@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -54,28 +53,36 @@ def _dedupe_preserve(items: Sequence[str]) -> list[str]:
     return out
 
 
+def _extract_string_list(data: object) -> list[str] | None:
+    if isinstance(data, dict) and "queries" in data:
+        data = data["queries"]
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        return None
+    return [x.strip() for x in data if x.strip()]
+
+
 def _parse_queries(content: str) -> list[str]:
     text = (content or "").strip()
     if not text:
         return []
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if fence:
-        text = fence.group(1).strip()
+    decoder = json.JSONDecoder()
     try:
-        data = json.loads(text)
+        data, end = decoder.raw_decode(text)
+        if end == len(text):
+            # The whole reply is one JSON value: accept it or ignore it, never dig inside it.
+            return _extract_string_list(data) or []
     except json.JSONDecodeError:
-        m = re.search(r"\[[\s\S]*\]", text)
-        if not m:
-            return []
+        pass
+    pos = text.find("[")
+    while pos != -1:
         try:
-            data = json.loads(m.group(0))
+            data, _ = decoder.raw_decode(text, pos)
+            if isinstance(data, list) and all(isinstance(x, str) for x in data):
+                return [x.strip() for x in data if x.strip()]
         except json.JSONDecodeError:
-            return []
-    if isinstance(data, dict) and "queries" in data:
-        data = data["queries"]
-    if not isinstance(data, list):
-        return []
-    return [str(x).strip() for x in data if str(x).strip()]
+            pass
+        pos = text.find("[", pos + 1)
+    return []
 
 
 def expand_queries(

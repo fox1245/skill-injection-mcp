@@ -500,3 +500,44 @@ def test_embedding_cache_get_many_and_put_many_single_connection(
     np.testing.assert_allclose(loaded["d1"], v1)
     np.testing.assert_allclose(loaded["d2"], v2)
     np.testing.assert_allclose(loaded["d3"], v3)
+
+
+def test_vectors_paid_for_before_a_failed_build_are_kept(tmp_path, monkeypatch):
+    from skill_inject_mcp.embed.embedder import FakeEmbedder
+    from skill_inject_mcp.registry.scan import SkillRegistry
+
+    FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "skills"
+    total = len(SkillRegistry().load(FIXTURES))
+    assert total >= 3
+    calls: list[int] = []
+    original = FakeEmbedder.embed_documents
+
+    def fail_on_second_batch(self, texts, *, deadline=None):
+        calls.append(len(texts))
+        if len(calls) == 2:
+            raise RuntimeError("embedding server unavailable")
+        return original(self, texts, deadline=deadline)
+
+    def make_engine():
+        return SkillInjectEngine(Settings(
+            _env_file=None, skills_dir=FIXTURES, index_dir=tmp_path / "index",
+            use_fake_embedder=True, multi_query=False, embedding_batch_size=1,
+        ))
+
+    monkeypatch.setattr(FakeEmbedder, "embed_documents", fail_on_second_batch)
+    first = make_engine()
+    try:
+        with pytest.raises(RuntimeError):
+            first.ensure_index()
+    finally:
+        first.close()
+    assert calls == [1, 1]
+
+    calls.clear()
+    monkeypatch.setattr(FakeEmbedder, "embed_documents", lambda self, texts, *, deadline=None: (calls.append(len(texts)), original(self, texts, deadline=deadline))[1])
+    second = make_engine()
+    try:
+        second.ensure_index()
+    finally:
+        second.close()
+    assert sum(calls) == total - 1

@@ -8,7 +8,7 @@ import httpx
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever, reciprocal_rank_fusion
-from skill_inject_mcp.retrieve.multi_query import expand_queries
+from skill_inject_mcp.retrieve.multi_query import _parse_queries, expand_queries
 from skill_inject_mcp.schemas import (
     Constraints,
     MatchStatus,
@@ -194,3 +194,28 @@ def test_custom_top_k_changes_evidence_width(tmp_path: Path):
     default_ev = [e for e in default.evidence if e.requirement_id == "r"]
     assert len(default_ev) <= 5
     assert len(default_ev) >= len(narrow_ev)
+
+
+def test_parse_queries_raw_decode_cases():
+    # 1. Fenced JSON
+    fenced = '```json\n["pip install", "python packaging", "uv add"]\n```'
+    assert _parse_queries(fenced) == ["pip install", "python packaging", "uv add"]
+
+    # 2. Prose around the array
+    prose = 'Here are the expanded queries:\n["bm25 sparse search", "sqlite fts5"]\nHope this helps!'
+    assert _parse_queries(prose) == ["bm25 sparse search", "sqlite fts5"]
+
+    # 3. Decodable object that is not a list (ignored when no string list is present; skipped when followed by a list)
+    assert _parse_queries('{"status": "ok", "count": 2}') == []
+    assert _parse_queries('{"meta": [1, 2, 3]} ["first query", "second query"]') == [
+        "first query",
+        "second query",
+    ]
+
+    # 4. Nested brackets inside prose before the array
+    nested_prose = 'Context [see section [2] and [draft [a]]]: ["vector search", "cosine similarity"]'
+    assert _parse_queries(nested_prose) == ["vector search", "cosine similarity"]
+
+    # 5. Garbage input
+    assert _parse_queries("not valid json at all [unclosed") == []
+    assert _parse_queries("   ") == []

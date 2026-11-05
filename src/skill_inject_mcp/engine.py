@@ -22,8 +22,8 @@ from skill_inject_mcp.index.snapshot import (
     sweep_orphan_generations,
 )
 from skill_inject_mcp.registry.scan import SkillRegistry
-from skill_inject_mcp.registry.layer import classify_requirement_layer, partition_hits
-from skill_inject_mcp.registry.signature import source_signature
+from skill_inject_mcp.registry.layer import partition_hits
+from skill_inject_mcp.registry.signature import mark_unreadable, source_signature
 from skill_inject_mcp.retrieve.checks import evaluate_candidate
 from skill_inject_mcp.retrieve.hybrid import HybridRetriever
 from skill_inject_mcp.retrieve.multi_query import expand_queries
@@ -135,6 +135,13 @@ class SkillInjectEngine:
             if not root.is_dir():
                 raise ValueError(f"Skills directory does not exist: {root}")
             registry.load(root)
+        unreadable = {
+            str(variant)
+            for err in registry.validation_errors if err.code == "missing_skill_path" and err.path
+            for variant in (Path(err.path), Path(err.path).absolute())
+        }
+        if unreadable:
+            signature = mark_unreadable(signature, unreadable)
         snapshot_id = fingerprint(registry, root, index_identity(self.settings))
         if not force and self._snapshot is not None and self._snapshot.snapshot_id == snapshot_id:
             self._source_signature = signature
@@ -378,10 +385,13 @@ class SkillInjectEngine:
                 all_hits = self.retriever.retrieve(
                     req.description, top_k=max(len(self.registry.skills), 1), queries=queries,
                 )
-                wanted = classify_requirement_layer(req.description, req.search_query)
-                primary, secondary = partition_hits(all_hits, self.registry.skills, wanted)
-                search_hits = primary or secondary
-                ranked_hits = primary + secondary
+                if req.layer is not None:
+                    primary, secondary = partition_hits(all_hits, self.registry.skills, req.layer)
+                    search_hits = primary or secondary
+                    ranked_hits = primary + secondary
+                else:
+                    search_hits = list(all_hits)
+                    ranked_hits = list(all_hits)
             def verify():
                 nonlocal semantic_assessments, verification_degraded
                 if mode == "semantic":

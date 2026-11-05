@@ -27,11 +27,24 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     return meta, parts[2].lstrip("\n")
 
 
-def scan_skills(skills_dir: Path) -> list[SkillMeta]:
+def scan_skills(
+    skills_dir: Path,
+    errors: list[ValidationErrorItem] | None = None,
+) -> list[SkillMeta]:
     skills_dir = Path(skills_dir)
     results = []
     for skill_md in sorted(skills_dir.rglob("SKILL.md")):
-        raw = skill_md.read_bytes()
+        try:
+            raw = skill_md.read_bytes()
+            source_path = str(skill_md.resolve())
+        except OSError:
+            if errors is not None:
+                errors.append(ValidationErrorItem(
+                    code="missing_skill_path",
+                    message=f"Skill file disappeared or could not be read: {skill_md}",
+                    path=str(skill_md),
+                ))
+            continue
         fm, body = _parse_frontmatter(raw.decode("utf-8-sig"))
         skill_id = str(fm.get("id") or fm.get("skill_id") or skill_md.parent.name)
         deps = fm.get("depends_on") or fm.get("dependencies") or []
@@ -46,9 +59,11 @@ def scan_skills(skills_dir: Path) -> list[SkillMeta]:
             path=skill_md.relative_to(skills_dir).as_posix(),
             depends_on=[str(d) for d in deps], tags=[str(t) for t in tags],
             frontmatter=fm, content_hash=hashlib.sha256(raw).hexdigest(),
-            source_path=str(skill_md.resolve()),
+            source_path=source_path,
         ))
-        results[-1] = results[-1].model_copy(update={"layer": classify_skill_layer(results[-1])})
+        results[-1] = results[-1].model_copy(
+            update={"layer": classify_skill_layer(results[-1], errors=errors)}
+        )
     return results
 
 
@@ -86,25 +101,55 @@ class SkillRegistry:
         self.duplicate_ids: set[str] = set()
 
     def load(self, skills_dir: Path) -> list[SkillMeta]:
-        return self._assign(scan_skills(skills_dir))
+        errors: list[ValidationErrorItem] = []
+        skills = scan_skills(skills_dir, errors=errors)
+        return self._assign(skills, errors)
 
     def load_manifest(self, manifest: Path) -> list[SkillMeta]:
         entries = json.loads(Path(manifest).read_text(encoding="utf-8-sig"))["skills"]
         skills = []
+        errors: list[ValidationErrorItem] = []
         for entry in entries:
             if not entry.get("enabled", True):
                 continue
-            path = Path(entry["path"]).resolve()
-            if path.name != "SKILL.md" or not path.is_file():
-                raise ValueError(f"Invalid installed skill path: {path}")
-            original = next(s for s in scan_skills(path.parent) if Path(s.source_path) == path)
+            raw_path = str(entry.get("path") or "")
+            try:
+                path = Path(raw_path).resolve() if raw_path else None
+                valid_file = path is not None and path.name == "SKILL.md" and path.is_file()
+            except OSError:
+                path = None
+                valid_file = False
+            if not valid_file or path is None:
+                errors.append(ValidationErrorItem(
+                    code="missing_skill_path",
+                    message=f"Invalid or missing installed skill path: {raw_path}",
+                    path=raw_path,
+                ))
+                continue
+            entry_errors: list[ValidationErrorItem] = []
+            scanned = scan_skills(path.parent, errors=entry_errors)
+            original = next((s for s in scanned if Path(s.source_path) == path), None)
+            if original is None:
+                errors.append(ValidationErrorItem(
+                    code="missing_skill_path",
+                    message=f"Installed skill path could not be loaded: {raw_path}",
+                    path=raw_path,
+                ))
+                continue
+            for err in entry_errors:
+                if err.code == "invalid_skill_layer" and err.path == original.path:
+                    errors.append(err)
             skills.append(original.model_copy(update={
                 "skill_id": entry["name"], "source_path": str(path),
             }))
-        return self._assign(skills)
+        return self._assign(skills, errors)
 
-    def _assign(self, skills: list[SkillMeta]) -> list[SkillMeta]:
-        self.validation_errors = validate_skill_graph(skills)
+    def _assign(
+        self,
+        skills: list[SkillMeta],
+        extra_errors: list[ValidationErrorItem] | None = None,
+    ) -> list[SkillMeta]:
+        self.validation_errors = list(extra_errors or []) + validate_skill_graph(skills)
         self.skills = {}
         self.duplicate_ids = set()
         for skill in skills:

@@ -1,69 +1,33 @@
 """Separate skills-about-skills (meta) from domain skills during retrieval."""
 from __future__ import annotations
 
-import re
 from typing import Iterable, Literal, TypeVar
 
-from skill_inject_mcp.schemas import SkillMeta
+from skill_inject_mcp.schemas import SkillMeta, ValidationErrorItem
 
 SkillLayer = Literal["meta", "domain"]
 
-KNOWN_META_IDS = {
-    "skill-creator",
-    "skill-installer",
-    "skills-maintain",
-    "find-skills",
-    "skill-inspector",
-    "agentx-codex-conductor",
-    "plugin-creator",
-    "template-creator",
-    "ancient-grand-master-skill",
-}
 
-_KO = (
-    "\uc2a4\ud0ac"
-    r"\s*(?:"
-    "\uc124\uce58|\uac10\uc0ac|\uac80\uc218|"
-    "\uc0dd\uc131|\uc791\uc131|\uc720\uc9c0\ubcf4\uc218|\uba54\ud0c0)"
-)
-_REQ_META = re.compile(
-    r"(?is)(?:skill\.md|skil{1,2}[-_\s]*injection|self[-_\s]*directing|"
-    r"agentx-codex-conductor|meta[- ]?skill|\b(?:skill-inspector|skillspector)\b|"
-    r"\b(?:review(?:ing)?|inspect(?:ing)?|audit(?:ing)?)\s+"
-    r"(?:(?:a|an|the)\s+)?(?:(?:ai\s+)?agent\s+|codex\s+)?skills?\b|"
-    r"create(?:\s+or\s+update)?\s+(?:a\s+)?(?:codex\s+)?skill|"
-    r"install(?:able)?\s+(?:a\s+)?(?:codex\s+)?skill|"
-    r"skill catalog|audit(?:ing)?\s+skills?|"
-    r"inspect(?:ing)?\s+(?:a\s+)?skill|"
-    + _KO
-    + ")"
-)
-
-
-def classify_skill_layer(skill: SkillMeta) -> SkillLayer:
-    raw = str(skill.frontmatter.get("layer") or "").strip().lower()
-    if raw in ("meta", "domain"):
-        return raw  # type: ignore[return-value]
-    tags = {str(t).strip().lower() for t in skill.tags}
-    if tags & {"meta", "meta-skill", "metaskill"}:
-        return "meta"
-    sid = skill.skill_id.lower()
-    name = skill.name.lower()
-    if sid in KNOWN_META_IDS or name in KNOWN_META_IDS:
-        return "meta"
-    markers = ("skill-creator", "skill-installer", "skill-inspector")
-    if any(token in sid or token in name for token in markers):
-        return "meta"
-    blob = (skill.name + "\n" + skill.description).lower()
-    needles = ("create", "install", "inspect", "audit", "catalog", "maintain")
-    if "skill.md" in blob and any(word in blob for word in needles):
-        return "meta"
+def classify_skill_layer(
+    skill: SkillMeta,
+    errors: list[ValidationErrorItem] | None = None,
+) -> SkillLayer:
+    if "layer" not in skill.frontmatter or skill.frontmatter.get("layer") is None:
+        return "domain"
+    raw = skill.frontmatter.get("layer")
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in ("meta", "domain"):
+            return normalized  # type: ignore[return-value]
+    if errors is not None:
+        errors.append(
+            ValidationErrorItem(
+                code="invalid_skill_layer",
+                message=f"Invalid skill layer {raw!r} in frontmatter; expected 'meta' or 'domain'",
+                path=skill.path,
+            )
+        )
     return "domain"
-
-
-def classify_requirement_layer(description: str, search_query: str | None = None) -> SkillLayer:
-    text = description + "\n" + (search_query or "")
-    return "meta" if _REQ_META.search(text) else "domain"
 
 
 Hit = TypeVar("Hit")

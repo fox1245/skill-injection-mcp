@@ -19,7 +19,9 @@ def test_prompt_hook_returns_advisory_context(engine):
 
 def test_acknowledgement_does_not_index(engine, monkeypatch):
     monkeypatch.setattr(engine, "ensure_index", lambda: (_ for _ in ()).throw(AssertionError("no indexing")))
-    assert prompt_context(engine, "좋아")["hookSpecificOutput"]["additionalContext"] == ""
+    assert prompt_context(engine, "   \n\t ")["hookSpecificOutput"]["additionalContext"] == ""
+    non_empty = prompt_context(engine, "좋아")["hookSpecificOutput"]["additionalContext"]
+    assert "Skill Injection MCP discovery" in non_empty
 
 
 def test_hook_failure_does_not_block_user(engine, monkeypatch):

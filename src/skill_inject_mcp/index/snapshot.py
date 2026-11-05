@@ -279,8 +279,10 @@ def build_snapshot(
             copied = array.copy()
             vectors[digest] = copied
             newly_embedded[digest] = copied
-    if newly_embedded and disk_cache is not None:
-        disk_cache.put_many(newly_embedded)
+        if disk_cache is not None:
+            # Persist each batch as soon as it is paid for, so a later failure keeps the finished work.
+            disk_cache.put_many(newly_embedded)
+            newly_embedded = {}
 
     index_root = Path(settings.index_dir).resolve()
     directory, lease = _create_generation(index_root)

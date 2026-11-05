@@ -348,6 +348,7 @@ resolve_skills
 ```text
 search_query
 depends_on
+layer
 ```
 
 또한 선택적으로 `draft_plan`을 제공할 수 있습니다.
@@ -360,6 +361,22 @@ draft_plan
 ```
 
 지원하지 않는 필드가 포함되면 조용히 무시하지 않고 오류를 반환합니다.
+
+---
+
+## Skill Layers
+
+스킬과 요구사항의 계층(`meta` 또는 `domain`)은 선언된 신호로만 결정됩니다(스킬 ID 목록, 태그, 설명 키워드나 정규식 휴리스틱을 사용하지 않음).
+
+* **스킬 계층 (`SKILL.md` frontmatter `layer`)**:
+  * `layer: meta` 또는 `layer: domain`으로 선언합니다.
+  * `layer` 필드가 없거나 `null`이면 `domain`으로 처리됩니다.
+  * 그 외의 잘못된 값은 `domain`으로 처리하고 `validation_errors`에 `invalid_skill_layer`를 기록합니다.
+* **요구사항 계층 (`Requirement.layer`)**:
+  * 요구사항에 선택적 필드 `layer: "meta" | "domain" | null`(기본값 `null`)을 지정할 수 있습니다.
+  * `req.layer`가 지정되면 해당 계층의 후보를 우선 검색·정렬(`primary or secondary`)하고, `req.layer`가 `null`(미지정)이면 계층별 분할을 수행하지 않습니다.
+* **프롬프트 훅 (`codex_prompt_hook`)**:
+  * 공백만 있는 프롬프트만 빈 응답을 반환하며, 후보에 대해 계층 필터링을 적용하지 않습니다.
 
 ---
 
@@ -575,7 +592,7 @@ NeoGraph 설치·로드 실패는 명시적인 오류이며 별도 실행기로 
 특징:
 
 * 프롬프트 실행을 차단하지 않음
-* 단순한 메시지는 건너뜀
+* 공백만 있는 프롬프트는 건너뜀
 * 기본 내부 타임아웃 120초, 상위 Codex 훅 타임아웃 권장값 240초
 * 기존 인덱스 스냅샷 사용
 * 백그라운드 인덱싱 지원

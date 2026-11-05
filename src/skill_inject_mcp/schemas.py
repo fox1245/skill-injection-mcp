@@ -24,6 +24,7 @@ class Requirement(ContractModel):
     required: bool = True
     search_query: str | None = None
     depends_on: list[str] = Field(default_factory=list)
+    layer: Literal["meta", "domain"] | None = None
 
 
 class Constraints(ContractModel):

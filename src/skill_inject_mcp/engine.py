@@ -374,6 +374,7 @@ class SkillInjectEngine:
                     connect_timeout_s=self.settings.http_connect_timeout_s,
                     write_timeout_s=self.settings.http_write_timeout_s,
                     pool_timeout_s=self.settings.http_pool_timeout_s,
+                    provider_order=self.settings.chat_provider_order,
                     client=self._get_chat_client() if self.settings.multi_query_enabled() else None,
                 )
                 if mq.skipped and self.settings.multi_query_enabled():
@@ -409,6 +410,7 @@ class SkillInjectEngine:
                         connect_timeout_s=self.settings.http_connect_timeout_s,
                         write_timeout_s=self.settings.http_write_timeout_s,
                         pool_timeout_s=self.settings.http_pool_timeout_s,
+                        provider_order=self.settings.chat_provider_order,
                         max_source_chars=self.settings.verification_max_source_chars,
                         max_tokens=self.settings.verification_max_tokens,
                         max_retries=self.settings.verification_max_retries,

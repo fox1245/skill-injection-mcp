@@ -29,11 +29,13 @@ _EMBEDDER_KW = {
 _EXPAND_KW = {
     "model": _DEFAULTS.multi_query_model,
     "base_url": _DEFAULTS.chat_base_url,
+    "provider_order": _DEFAULTS.chat_provider_order,
     **_HTTP_BUDGET_KW,
 }
 _VERIFY_KW = {
     "model": _DEFAULTS.verification_model,
     "base_url": _DEFAULTS.chat_base_url,
+    "provider_order": _DEFAULTS.chat_provider_order,
     **_HTTP_BUDGET_KW,
 }
 

@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     persistent_embedding_cache: bool = True
     embedding_base_url: str = "https://openrouter.ai/api/v1"
     chat_base_url: str = "https://openrouter.ai/api/v1"
+    chat_provider_order: list[str] = Field(default_factory=lambda: ["Cerebras", "Groq"])
     use_fake_embedder: bool = False
     retrieval_mode: Literal["hybrid", "lexical"] = "hybrid"
     dense_backend: Literal["sqlite-vector", "numpy"] = "sqlite-vector"

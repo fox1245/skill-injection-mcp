@@ -484,6 +484,7 @@ qwen/qwen3-embedding-8b
 | `SKILL_INJECT_EMBEDDING_API_KEY` (`embedding_api_key`) | 임베딩 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
 | `SKILL_INJECT_CHAT_BASE_URL` (`chat_base_url`) | 멀티쿼리 확장 및 semantic 검증용 채팅 API 기본 URL (기본 `https://openrouter.ai/api/v1`) |
 | `SKILL_INJECT_CHAT_API_KEY` (`chat_api_key`) | 멀티쿼리 확장 및 semantic 검증용 채팅 전용 API 키 (미지정 시 `resolve_api_key()` 폴백) |
+| `SKILL_INJECT_CHAT_PROVIDER_ORDER` (`chat_provider_order`) | 채팅 요청(`provider.order`)에 전달할 프로바이더 우선순위 JSON 목록 (기본 `["Cerebras", "Groq"]`, 빈 목록 `[]`이면 `provider` 블록 생략) |
 | `SKILL_INJECT_EMBEDDING_MAX_CONCURRENCY` (`embedding_max_concurrency`) | 모든 프로세스가 공유하는 동시 임베딩 요청 슬롯 수 |
 | `SKILL_INJECT_EMBEDDING_QUEUE_DIR` (`embedding_queue_dir`) | 슬롯 락 파일을 저장하는 큐 디렉터리 (미지정 시 `<index_dir>/embedding-queue`) |
 | `SKILL_INJECT_EMBEDDING_QUEUE_MAX_WAIT_S` (`embedding_queue_max_wait_s`) | 별도 마감 시간이 없는 호출이 빈 슬롯을 기다리는 최대 시간(초) |

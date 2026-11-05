@@ -455,7 +455,7 @@ def test_http_budgets_come_from_settings_and_signatures_have_no_defaults(
         "pool": 17.5,
     }
 
-    # Verify model names, base URLs, and timeouts have no defaults in function signatures.
+    # Verify model names, base URLs, timeouts, and provider routing have no defaults in function signatures.
     required_params = ("model", "base_url", "timeout_s", "connect_timeout_s", "write_timeout_s", "pool_timeout_s")
     for fn in (OpenRouterEmbedder.__init__, build_embedder, expand_queries, SemanticVerifier.verify):
         sig = inspect.signature(fn)
@@ -464,6 +464,10 @@ def test_http_budgets_come_from_settings_and_signatures_have_no_defaults(
             assert sig.parameters[name].default is inspect.Parameter.empty, (
                 f"{fn} parameter {name} must not have a default value"
             )
+    for fn in (expand_queries, SemanticVerifier.verify):
+        sig = inspect.signature(fn)
+        assert "provider_order" in sig.parameters
+        assert sig.parameters["provider_order"].default is inspect.Parameter.empty
 
     for bad_field in ("http_connect_timeout_s", "http_write_timeout_s", "http_pool_timeout_s"):
         with pytest.raises(ValidationError):
@@ -541,3 +545,121 @@ def test_vectors_paid_for_before_a_failed_build_are_kept(tmp_path, monkeypatch):
     finally:
         second.close()
     assert sum(calls) == total - 1
+
+
+def test_chat_provider_order_controls_multi_query_and_verification_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skills_root = tmp_path / "skills"
+    _write_skill(
+        skills_root,
+        "package-installer",
+        name="package-installer",
+        description="Install Python packages and project dependencies with pip.",
+        body="Use pip install to install Python packages.",
+    )
+
+    seen_mq_payloads: list[dict] = []
+    seen_verify_payloads: list[dict] = []
+
+    def respond(transport, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        payload = json.loads(request.content)
+        if url.endswith("/embeddings"):
+            inputs = payload["input"]
+            return httpx.Response(
+                200,
+                json={"data": [{"index": i, "embedding": [1.0, 0.0]} for i in range(len(inputs))]},
+            )
+        if "response_format" not in payload:
+            seen_mq_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '["pip install", "python packages"]'}}]},
+            )
+        seen_verify_payloads.append(payload)
+        candidates = json.loads(payload["messages"][1]["content"])["candidates"]
+        verdicts = [
+            {
+                "skill_id": c["skill_id"],
+                "assessment": "supported",
+                "reason": "Supports installation.",
+                "evidence": [{"source_id": c["sources"][0]["source_id"]}],
+                "unmet_requirements": [],
+            }
+            for c in candidates
+        ]
+        return httpx.Response(
+            200,
+            json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"results": verdicts})}}]},
+        )
+
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", respond)
+
+    def run_with_settings(idx_name: str, **extra_settings) -> None:
+        seen_mq_payloads.clear()
+        seen_verify_payloads.clear()
+        eng = SkillInjectEngine(
+            Settings(
+                _env_file=None,
+                skills_dir=skills_root,
+                index_dir=tmp_path / idx_name,
+                OPENROUTER_API_KEY="test-key",
+                use_fake_embedder=False,
+                embedding_dim=2,
+                multi_query=True,
+                verification_mode="semantic",
+                **extra_settings,
+            )
+        )
+        try:
+            res = eng.resolve(
+                SkillInjectRequest(
+                    requirements=[Requirement(id="r", description="Install Python packages with pip")]
+                )
+            )
+            assert res.match_status == "complete"
+        finally:
+            eng.close()
+
+    # (1) With chat_provider_order=[], neither multi-query nor verification request body has a "provider" key.
+    run_with_settings("idx-empty", chat_provider_order=[])
+    assert len(seen_mq_payloads) == 1
+    assert len(seen_verify_payloads) == 1
+    assert "provider" not in seen_mq_payloads[0]
+    assert "provider" not in seen_verify_payloads[0]
+
+    # (2) With chat_provider_order=["A", "B"], both bodies carry {"order": ["A", "B"], ...}.
+    run_with_settings("idx-custom", chat_provider_order=["A", "B"])
+    assert len(seen_mq_payloads) == 1
+    assert len(seen_verify_payloads) == 1
+    assert seen_mq_payloads[0]["provider"] == {
+        "order": ["A", "B"],
+        "allow_fallbacks": True,
+    }
+    assert seen_verify_payloads[0]["provider"] == {
+        "order": ["A", "B"],
+        "allow_fallbacks": True,
+        "require_parameters": True,
+    }
+
+    # (3) Default Settings still produces the original ["Cerebras", "Groq"] order.
+    assert Settings(_env_file=None).chat_provider_order == ["Cerebras", "Groq"]
+    run_with_settings("idx-default")
+    assert len(seen_mq_payloads) == 1
+    assert len(seen_verify_payloads) == 1
+    assert seen_mq_payloads[0]["provider"] == {
+        "order": ["Cerebras", "Groq"],
+        "allow_fallbacks": True,
+    }
+    assert seen_verify_payloads[0]["provider"] == {
+        "order": ["Cerebras", "Groq"],
+        "allow_fallbacks": True,
+        "require_parameters": True,
+    }
+
+    # Environment variable JSON list parsing also works.
+    monkeypatch.setenv("SKILL_INJECT_CHAT_PROVIDER_ORDER", '["ProviderX", "ProviderY"]')
+    assert Settings(_env_file=None).chat_provider_order == ["ProviderX", "ProviderY"]
+    monkeypatch.setenv("SKILL_INJECT_CHAT_PROVIDER_ORDER", "[]")
+    assert Settings(_env_file=None).chat_provider_order == []

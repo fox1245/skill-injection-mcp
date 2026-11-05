@@ -8,9 +8,6 @@ import httpx
 
 from skill_inject_mcp.timeouts import http_timeout
 
-# Prefer fast inference hosts when the model is available there (OpenRouter provider routing).
-DEFAULT_PROVIDER_ORDER = ["Cerebras", "Groq"]
-
 _SYSTEM = """You expand a skill-matching requirement into diverse search queries.
 Return ONLY a JSON array of 3 to 5 short strings (no markdown, no commentary).
 Include keyword variants, paraphrases, and skill-oriented phrasings.
@@ -97,7 +94,7 @@ def expand_queries(
     connect_timeout_s: float,
     write_timeout_s: float,
     pool_timeout_s: float,
-    provider_order: Sequence[str] | None = None,
+    provider_order: Sequence[str],
     client: httpx.Client | None = None,
 ) -> MultiQueryResult:
     """Expand a requirement into 3-5 retrieval queries via OpenRouter chat.
@@ -115,8 +112,8 @@ def expand_queries(
     if not api_key:
         return MultiQueryResult(queries=[original], skipped=True, reason="no_api_key")
 
-    order = list(provider_order) if provider_order is not None else list(DEFAULT_PROVIDER_ORDER)
-    payload = {
+    order = list(provider_order)
+    payload: dict[str, object] = {
         "model": model,
         "messages": [
             {"role": "system", "content": _SYSTEM},
@@ -130,11 +127,12 @@ def expand_queries(
         ],
         "temperature": 0.3,
         "max_tokens": 400,
-        "provider": {
+    }
+    if order:
+        payload["provider"] = {
             "order": order,
             "allow_fallbacks": True,
-        },
-    }
+        }
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",

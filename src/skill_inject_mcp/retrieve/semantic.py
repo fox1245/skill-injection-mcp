@@ -5,7 +5,7 @@ import hashlib
 import json
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Sequence
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -213,6 +213,7 @@ class SemanticVerifier:
         connect_timeout_s: float,
         write_timeout_s: float,
         pool_timeout_s: float,
+        provider_order: Sequence[str],
         max_source_chars: int = 16000,
         client: httpx.Client | None = None,
         max_tokens: int = 8192,
@@ -265,7 +266,7 @@ class SemanticVerifier:
         schema["$defs"]["CandidateVerdict"]["properties"]["skill_id"]["enum"] = [
             candidate["skill_id"] for candidate in pending
         ]
-        payload = {
+        payload: dict[str, object] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -279,8 +280,14 @@ class SemanticVerifier:
                 "name": "skill_capability_verification", "strict": True,
                 "schema": schema,
             }},
-            "provider": {"order": ["Cerebras", "Groq"], "allow_fallbacks": True, "require_parameters": True},
         }
+        order = list(provider_order)
+        if order:
+            payload["provider"] = {
+                "order": order,
+                "allow_fallbacks": True,
+                "require_parameters": True,
+            }
         budget = http_timeout(
             timeout_s,
             connect_timeout_s=connect_timeout_s,

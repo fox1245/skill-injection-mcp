@@ -18,6 +18,7 @@ VERIFY_KW = {
     "connect_timeout_s": _DEFAULTS.http_connect_timeout_s,
     "write_timeout_s": _DEFAULTS.http_write_timeout_s,
     "pool_timeout_s": _DEFAULTS.http_pool_timeout_s,
+    "provider_order": _DEFAULTS.chat_provider_order,
 }
 
 

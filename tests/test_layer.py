@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from skill_inject_mcp.config import Settings
 from skill_inject_mcp.engine import SkillInjectEngine
 from skill_inject_mcp.registry.layer import classify_skill_layer
+from skill_inject_mcp.registry.scan import SkillRegistry
 from skill_inject_mcp.schemas import Requirement, SkillInjectRequest, SkillMeta, ValidationErrorItem
 
 
@@ -171,5 +173,264 @@ def test_conductor_is_meta_and_covers_orchestration(tmp_path: Path):
         ]))
         assert resp.checks[0].skill_id == "agentx-codex-conductor"
         assert resp.checks[0].layer == "meta"
+    finally:
+        eng.close()
+
+
+def test_layer_overrides_file_precedence(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(skills, "plain-skill", "Create or update a skill with SKILL.md.")
+    _write_skill(skills, "frontmatter-meta", "Install Python packages with pip.", extra="layer: meta\n")
+    _write_skill(skills, "kept-meta", "Inspect skill catalogs.", extra="layer: meta\n")
+    overrides = tmp_path / "layer_overrides.json"
+    overrides.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "layers": {
+                "plain-skill": "meta",
+                "frontmatter-meta": "domain",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    eng = SkillInjectEngine(
+        Settings(
+            skills_dir=skills,
+            layer_overrides=overrides,
+            index_dir=tmp_path / "idx",
+            use_fake_embedder=True,
+            _env_file=None,
+            rerank="off",
+            multi_query=False,
+        )
+    )
+    try:
+        info = eng.ensure_index()
+        assert info["validation_errors"] == []
+        assert eng.registry.get("plain-skill").layer == "meta"
+        assert eng.registry.get("frontmatter-meta").layer == "domain"
+        assert eng.registry.get("kept-meta").layer == "meta"
+    finally:
+        eng.close()
+
+
+def test_layer_overrides_error_cases_yield_codes_and_apply_no_override(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(skills, "plain-skill", "Create or update a skill with SKILL.md.")
+    _write_skill(skills, "frontmatter-meta", "Install Python packages with pip.", extra="layer: meta\n")
+
+    missing_path = tmp_path / "missing_overrides.json"
+    bad_json_path = tmp_path / "bad_json.json"
+    bad_json_path.write_text("{not valid json", encoding="utf-8")
+    extra_key_path = tmp_path / "extra_key.json"
+    extra_key_path.write_text(
+        json.dumps({"schema_version": 1, "layers": {"plain-skill": "meta"}, "note": "x"}),
+        encoding="utf-8",
+    )
+    wrong_version_path = tmp_path / "wrong_version.json"
+    wrong_version_path.write_text(
+        json.dumps({"schema_version": 2, "layers": {"plain-skill": "meta", "frontmatter-meta": "domain"}}),
+        encoding="utf-8",
+    )
+    bad_value_path = tmp_path / "bad_value.json"
+    bad_value_path.write_text(
+        json.dumps({"schema_version": 1, "layers": {"plain-skill": "meta", "frontmatter-meta": "invalid"}}),
+        encoding="utf-8",
+    )
+    unknown_skill_path = tmp_path / "unknown_skill.json"
+    unknown_skill_path.write_text(
+        json.dumps({"schema_version": 1, "layers": {"no-such-skill": "meta"}}),
+        encoding="utf-8",
+    )
+
+    cases = [
+        (missing_path, "unreadable_layer_overrides"),
+        (bad_json_path, "invalid_layer_overrides"),
+        (extra_key_path, "invalid_layer_overrides"),
+        (wrong_version_path, "invalid_layer_overrides_version"),
+        (bad_value_path, "invalid_layer_override"),
+        (unknown_skill_path, "unknown_layer_override"),
+    ]
+    for idx, (path, expected_code) in enumerate(cases):
+        eng = SkillInjectEngine(
+            Settings(
+                skills_dir=skills,
+                layer_overrides=path,
+                index_dir=tmp_path / f"idx-{idx}",
+                use_fake_embedder=True,
+                _env_file=None,
+                rerank="off",
+                multi_query=False,
+            )
+        )
+        try:
+            info = eng.ensure_index()
+            sig = eng._source_signature
+            assert eng.ensure_index()["registry_snapshot"] == info["registry_snapshot"]
+            assert eng._source_signature == sig
+            codes = [err["code"] for err in info["validation_errors"]]
+            assert expected_code in codes
+            assert eng.registry.get("plain-skill").layer == "domain"
+            assert eng.registry.get("frontmatter-meta").layer == "meta"
+        finally:
+            eng.close()
+
+    # Deleting a previously readable invalid file invalidates the signature and reports unreadable.
+    eng_del = SkillInjectEngine(
+        Settings(
+            skills_dir=skills,
+            layer_overrides=bad_json_path,
+            index_dir=tmp_path / "idx-del",
+            use_fake_embedder=True,
+            _env_file=None,
+            rerank="off",
+            multi_query=False,
+        )
+    )
+    try:
+        first_info = eng_del.ensure_index()
+        assert first_info["validation_errors"][0]["code"] == "invalid_layer_overrides"
+        bad_json_path.unlink()
+        second_info = eng_del.ensure_index()
+        assert second_info["validation_errors"][0]["code"] == "unreadable_layer_overrides"
+    finally:
+        eng_del.close()
+
+    # An unknown skill_id reports unknown_layer_override without dropping valid overrides in the same file.
+    mixed_unknown_path = tmp_path / "mixed_unknown.json"
+    mixed_unknown_path.write_text(
+        json.dumps({"schema_version": 1, "layers": {"plain-skill": "meta", "no-such-skill": "meta"}}),
+        encoding="utf-8",
+    )
+    eng_mixed = SkillInjectEngine(
+        Settings(
+            skills_dir=skills,
+            layer_overrides=mixed_unknown_path,
+            index_dir=tmp_path / "idx-mixed",
+            use_fake_embedder=True,
+            _env_file=None,
+            rerank="off",
+            multi_query=False,
+        )
+    )
+    try:
+        mixed_info = eng_mixed.ensure_index()
+        assert [err["code"] for err in mixed_info["validation_errors"]] == ["unknown_layer_override"]
+        assert eng_mixed.registry.get("plain-skill").layer == "meta"
+    finally:
+        eng_mixed.close()
+
+
+def test_layer_overrides_apply_to_manifest_registry(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(skills, "plain-skill", "Create or update a Codex skill with SKILL.md.")
+    _write_skill(skills, "frontmatter-meta", "Install Python packages with pip.", extra="layer: meta\n")
+    manifest = tmp_path / "catalog.json"
+    manifest.write_text(
+        json.dumps({
+            "skills": [
+                {"name": "plain-skill", "path": str(skills / "plain-skill" / "SKILL.md"), "enabled": True},
+                {"name": "frontmatter-meta", "path": str(skills / "frontmatter-meta" / "SKILL.md"), "enabled": True},
+                {"name": "disabled-skill", "path": str(skills / "disabled" / "SKILL.md"), "enabled": False},
+            ]
+        }),
+        encoding="utf-8",
+    )
+    overrides = tmp_path / "layer_overrides.json"
+    overrides.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "layers": {
+                "plain-skill": "meta",
+                "frontmatter-meta": "domain",
+                "disabled-skill": "domain",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    reg = SkillRegistry(layer_overrides=overrides)
+    reg.load_manifest(manifest)
+    assert reg.validation_errors == []
+    assert reg.get("plain-skill").layer == "meta"
+    assert reg.get("frontmatter-meta").layer == "domain"
+
+    eng = SkillInjectEngine(
+        Settings(
+            skill_manifest=manifest,
+            layer_overrides=overrides,
+            index_dir=tmp_path / "idx",
+            use_fake_embedder=True,
+            _env_file=None,
+            rerank="off",
+            multi_query=False,
+        )
+    )
+    try:
+        resp = eng.resolve(SkillInjectRequest(requirements=[
+            Requirement(
+                id="author",
+                description="Create or update a Codex skill with SKILL.md",
+                required=True,
+                layer="meta",
+            ),
+        ]))
+        assert resp.checks[0].skill_id == "plain-skill"
+        assert resp.checks[0].layer == "meta"
+    finally:
+        eng.close()
+
+
+def test_editing_layer_overrides_reloads_on_next_resolve_without_restart(tmp_path: Path):
+    skills = tmp_path / "skills"
+    _write_skill(skills, "skill-alpha", "Create or update a Codex skill with SKILL.md frontmatter.")
+    _write_skill(skills, "skill-beta", "Create or update a Codex skill with SKILL.md frontmatter.")
+    overrides = tmp_path / "layer_overrides.json"
+    overrides.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "layers": {"skill-alpha": "meta", "skill-beta": "domain"},
+        }),
+        encoding="utf-8",
+    )
+
+    eng = SkillInjectEngine(
+        Settings(
+            skills_dir=skills,
+            layer_overrides=overrides,
+            index_dir=tmp_path / "idx",
+            use_fake_embedder=True,
+            _env_file=None,
+            rerank="off",
+            multi_query=False,
+        )
+    )
+    try:
+        req = SkillInjectRequest(requirements=[
+            Requirement(
+                id="author",
+                description="Create or update a Codex skill with SKILL.md frontmatter",
+                required=True,
+                layer="meta",
+            ),
+        ])
+        first = eng.resolve(req)
+        assert first.checks[0].skill_id == "skill-alpha"
+        assert first.checks[0].layer == "meta"
+
+        overrides.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "layers": {"skill-alpha": "domain", "skill-beta": "meta"},
+            }),
+            encoding="utf-8",
+        )
+        second = eng.resolve(req)
+        assert second.registry_snapshot != first.registry_snapshot
+        assert second.checks[0].skill_id == "skill-beta"
+        assert second.checks[0].layer == "meta"
+        assert eng.registry.get("skill-alpha").layer == "domain"
+        assert eng.registry.get("skill-beta").layer == "meta"
     finally:
         eng.close()

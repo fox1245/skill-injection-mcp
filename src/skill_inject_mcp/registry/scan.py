@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from graphlib import CycleError, TopologicalSorter
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,7 @@ from typing import Any
 import yaml
 
 from skill_inject_mcp.schemas import SkillMeta, ValidationErrorItem
-from skill_inject_mcp.registry.layer import classify_skill_layer
+from skill_inject_mcp.registry.layer import SkillLayer, classify_skill_layer, load_layer_overrides
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
@@ -30,15 +31,18 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 def scan_skills(
     skills_dir: Path,
     errors: list[ValidationErrorItem] | None = None,
+    layer_overrides: Path | Mapping[str, SkillLayer] | None = None,
 ) -> list[SkillMeta]:
     skills_dir = Path(skills_dir)
     results = []
+    discovered_ids: list[str] = []
     for skill_md in sorted(skills_dir.rglob("SKILL.md")):
         try:
             raw = skill_md.read_bytes()
             source_path = str(skill_md.resolve())
             text = raw.decode("utf-8-sig")
         except (OSError, UnicodeDecodeError):
+            discovered_ids.append(skill_md.parent.name)
             if errors is not None:
                 errors.append(ValidationErrorItem(
                     code="missing_skill_path",
@@ -48,6 +52,7 @@ def scan_skills(
             continue
         fm, body = _parse_frontmatter(text)
         skill_id = str(fm.get("id") or fm.get("skill_id") or skill_md.parent.name)
+        discovered_ids.append(skill_id)
         deps = fm.get("depends_on") or fm.get("dependencies") or []
         tags = fm.get("tags") or []
         if isinstance(deps, str):
@@ -62,8 +67,17 @@ def scan_skills(
             frontmatter=fm, content_hash=hashlib.sha256(raw).hexdigest(),
             source_path=source_path,
         ))
-        results[-1] = results[-1].model_copy(
-            update={"layer": classify_skill_layer(results[-1], errors=errors)}
+    if isinstance(layer_overrides, Mapping):
+        overrides: Mapping[str, SkillLayer] = dict(layer_overrides)
+    elif layer_overrides is not None:
+        overrides = load_layer_overrides(
+            Path(layer_overrides), errors=errors, known_skill_ids=discovered_ids,
+        )
+    else:
+        overrides = {}
+    for idx, skill in enumerate(results):
+        results[idx] = skill.model_copy(
+            update={"layer": classify_skill_layer(skill, errors=errors, layer_overrides=overrides)}
         )
     return results
 
@@ -96,20 +110,23 @@ def validate_skill_graph(skills: list[SkillMeta]) -> list[ValidationErrorItem]:
 
 
 class SkillRegistry:
-    def __init__(self) -> None:
+    def __init__(self, layer_overrides: Path | None = None) -> None:
         self.skills: dict[str, SkillMeta] = {}
         self.validation_errors: list[ValidationErrorItem] = []
         self.duplicate_ids: set[str] = set()
+        self.layer_overrides: Path | None = Path(layer_overrides) if layer_overrides is not None else None
 
-    def load(self, skills_dir: Path) -> list[SkillMeta]:
+    def load(self, skills_dir: Path, layer_overrides: Path | None = None) -> list[SkillMeta]:
         errors: list[ValidationErrorItem] = []
-        skills = scan_skills(skills_dir, errors=errors)
+        overrides_path = Path(layer_overrides) if layer_overrides is not None else self.layer_overrides
+        skills = scan_skills(skills_dir, errors=errors, layer_overrides=overrides_path)
         return self._assign(skills, errors)
 
-    def load_manifest(self, manifest: Path) -> list[SkillMeta]:
+    def load_manifest(self, manifest: Path, layer_overrides: Path | None = None) -> list[SkillMeta]:
         entries = json.loads(Path(manifest).read_text(encoding="utf-8-sig"))["skills"]
         skills = []
         errors: list[ValidationErrorItem] = []
+        overrides_path = Path(layer_overrides) if layer_overrides is not None else self.layer_overrides
         for entry in entries:
             if not entry.get("enabled", True):
                 continue
@@ -127,8 +144,7 @@ class SkillRegistry:
                     path=raw_path,
                 ))
                 continue
-            entry_errors: list[ValidationErrorItem] = []
-            scanned = scan_skills(path.parent, errors=entry_errors)
+            scanned = scan_skills(path.parent)
             original = next((s for s in scanned if Path(s.source_path) == path), None)
             if original is None:
                 errors.append(ValidationErrorItem(
@@ -137,12 +153,21 @@ class SkillRegistry:
                     path=raw_path,
                 ))
                 continue
-            for err in entry_errors:
-                if err.code == "invalid_skill_layer" and err.path == original.path:
-                    errors.append(err)
             skills.append(original.model_copy(update={
                 "skill_id": entry["name"], "source_path": str(path),
             }))
+        manifest_skill_ids = [
+            str(entry["name"]) for entry in entries if isinstance(entry, dict) and entry.get("name")
+        ]
+        overrides = load_layer_overrides(
+            overrides_path,
+            errors=errors,
+            known_skill_ids=[*manifest_skill_ids, *(s.skill_id for s in skills)],
+        )
+        for idx, skill in enumerate(skills):
+            skills[idx] = skill.model_copy(
+                update={"layer": classify_skill_layer(skill, errors=errors, layer_overrides=overrides)}
+            )
         return self._assign(skills, errors)
 
     def _assign(

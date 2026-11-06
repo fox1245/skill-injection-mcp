@@ -368,6 +368,11 @@ draft_plan
 
 스킬과 요구사항의 계층(`meta` 또는 `domain`)은 선언된 신호로만 결정됩니다(스킬 ID 목록, 태그, 설명 키워드나 정규식 휴리스틱을 사용하지 않음).
 
+* **설치 소유 계층 파일 (`SKILL_INJECT_LAYER_OVERRIDES` / `layer_overrides`)**:
+  * 선택적으로 `{"schema_version": 1, "layers": {"<skill_id>": "meta" | "domain"}}` 형식의 JSON 파일 경로를 지정할 수 있습니다.
+  * 우선순위는 `layer_overrides` 파일의 `<skill_id>` 항목 → `SKILL.md` frontmatter `layer` → `domain`입니다.
+  * 파일을 읽을 수 없는 경우(`unreadable_layer_overrides`), JSON 객체를 파싱할 수 없거나 최상위 형식이 잘못된 경우(`invalid_layer_overrides`), `schema_version`이 `1`이 아니거나(`invalid_layer_overrides_version`), 허용되지 않는 계층 값인 경우(`invalid_layer_override`) `validation_errors`에 기록하고 파일의 오버라이드를 적용하지 않습니다. 스캔·매니페스트에 없는 `skill_id`는 `unknown_layer_override`를 기록합니다.
+  * 파일이 수정되면 다음 검색 시 재시작 없이 변경된 계층이 반영됩니다.
 * **스킬 계층 (`SKILL.md` frontmatter `layer`)**:
   * `layer: meta` 또는 `layer: domain`으로 선언합니다.
   * `layer` 필드가 없거나 `null`이면 `domain`으로 처리됩니다.

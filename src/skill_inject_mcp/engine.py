@@ -117,27 +117,37 @@ class SkillInjectEngine:
         with self._lock:
             return self._index(skills_dir, force=True)
 
+    def _layer_overrides_path(self) -> Path | None:
+        if self.settings.layer_overrides is None:
+            return None
+        return Path(self.settings.layer_overrides).expanduser().resolve()
+
     def _index(self, skills_dir: Path | None, *, force: bool) -> dict:
         if self._closed:
             raise RuntimeError("Skill engine is closed")
         selection = self._selection(skills_dir)
-        signature = source_signature(selection, None if force else self._source_signature)
+        overrides_path = self._layer_overrides_path()
+        signature = source_signature(
+            selection, None if force else self._source_signature, layer_overrides=overrides_path,
+        )
         if (not force and self._snapshot is not None and signature == self._source_signature
                 and self._snapshot.identity == index_identity(self.settings)):
             return self._snapshot.info()
-        registry = SkillRegistry()
+        registry = SkillRegistry(layer_overrides=overrides_path)
         if skills_dir is None and self.settings.skill_manifest is not None:
             manifest = Path(self.settings.skill_manifest).resolve()
-            registry.load_manifest(manifest)
+            registry.load_manifest(manifest, layer_overrides=overrides_path)
             root = manifest.parent
         else:
             root = Path(skills_dir if skills_dir is not None else self.settings.skills_dir).resolve()
             if not root.is_dir():
                 raise ValueError(f"Skills directory does not exist: {root}")
-            registry.load(root)
+            registry.load(root, layer_overrides=overrides_path)
         unreadable = {
             str(variant)
-            for err in registry.validation_errors if err.code == "missing_skill_path" and err.path
+            for err in registry.validation_errors
+            if err.code in ("missing_skill_path", "unreadable_layer_overrides")
+            and err.path
             for variant in (Path(err.path), Path(err.path).absolute())
         }
         if unreadable:
@@ -263,7 +273,9 @@ class SkillInjectEngine:
 
     def hook_catalog_state(self, snapshot) -> str:
         try:
-            current = source_signature(self._selection(), snapshot.source_signature)
+            current = source_signature(
+                self._selection(), snapshot.source_signature, layer_overrides=self._layer_overrides_path(),
+            )
             if current == snapshot.source_signature and snapshot.identity == index_identity(self.settings):
                 return "current"
         except (OSError, ValueError, KeyError, TypeError):

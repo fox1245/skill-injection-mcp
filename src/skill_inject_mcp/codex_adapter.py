@@ -5,6 +5,7 @@ import json
 import asyncio
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -48,9 +49,21 @@ def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
         process.stdin.write('{"method":"initialized"}\n')
         process.stdin.flush()
         result = call(2, "skills/list", {"cwds": [str(cwd)], "forceReload": True})
-        entries = result["data"][0]
-        if entries.get("errors"):
-            raise RuntimeError("Codex reported skill catalog errors")
+        data = result.get("data") if isinstance(result, dict) else None
+        if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+            raise RuntimeError("Codex returned no skill catalog data")
+        entries = data[0]
+        if not isinstance(entries.get("skills"), list):
+            raise RuntimeError("Codex returned no skill catalog data")
+        raw_errors = entries.get("errors") or []
+        for err in raw_errors:
+            if isinstance(err, dict):
+                err_path = err.get("path") or ""
+                err_msg = err.get("message") or ""
+                detail = f"{err_path}: {err_msg}" if err_path and err_msg else str(err_path or err_msg or err)
+            else:
+                detail = str(err)
+            print(f"Codex skill catalog error: {detail}", file=sys.stderr)
         skills = [
             {"name": s["name"], "path": s["path"], "scope": s["scope"], "enabled": True}
             for s in entries["skills"] if s["enabled"] and s["scope"] in ("user", "system")
@@ -67,7 +80,7 @@ def sync_catalog(executable: str, cwd: Path, destination: Path) -> dict:
             Path(temporary).replace(destination)
         finally:
             Path(temporary).unlink(missing_ok=True)
-        return {"skills": len(skills), "manifest": str(destination)}
+        return {"skills": len(skills), "errors": len(raw_errors), "manifest": str(destination)}
     finally:
         process.terminate()
         process.wait(timeout=10)

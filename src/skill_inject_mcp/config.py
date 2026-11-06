@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         description="Root directory containing skill folders with SKILL.md",
     )
     skill_manifest: Path | None = None
+    layer_overrides: Path | None = None
 
     index_dir: Path = Field(
         default_factory=lambda: Path(".skill_inject_index"),
@@ -157,6 +158,7 @@ def load_hook_settings(repo_root: Path | None = None) -> Settings:
 
     settings.skills_dir = _resolve_rel(settings.skills_dir) or settings.skills_dir
     settings.skill_manifest = _resolve_rel(settings.skill_manifest)
+    settings.layer_overrides = _resolve_rel(settings.layer_overrides)
     settings.index_dir = _resolve_rel(settings.index_dir) or settings.index_dir
     settings.embedding_queue_dir = _resolve_rel(settings.embedding_queue_dir)
     settings.sqlite_vector_path = _resolve_rel(settings.sqlite_vector_path)

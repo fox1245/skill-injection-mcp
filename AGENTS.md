@@ -97,7 +97,7 @@ lexical은 오프라인 폴백이며 교차언어 의미 지원을 증명하지 
 스킬은 frontmatter `layer: meta|domain`을 선언하고(없으면 domain), 요구사항은 선택 필드 `layer`로 원하는 계층을 선언합니다.
 요구사항이 계층을 선언하면 그 계층의 후보를 먼저 검색하고, 선언하지 않으면 계층별로 나누지 않습니다.
 메타 스킬 매칭이 도메인 작업 커버리지를 의미하지 않습니다.
-canonical 메타 스킬(`agentx-codex-conductor`, `skill-inspector`, `skill-creator`, `skill-installer`, `skills-maintain`, `find-skills`)은 frontmatter에 `layer: meta`를 선언해야 합니다.
+canonical 메타 스킬(`skill-inspector`, `skill-creator`, `skill-installer`, `skills-maintain`, `find-skills`)은 frontmatter에 `layer: meta`를 선언해야 합니다.
 orchestration 요구는 도메인 스킬이 아닌 메타 계층(`layer: meta`)에서 해결해야 합니다.
 
 ## 테스트

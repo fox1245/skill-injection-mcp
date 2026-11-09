@@ -38,9 +38,9 @@ def test_explicit_frontmatter_and_requirement_layers():
         body="", path="skill-creator/SKILL.md", frontmatter={"layer": "domain"}, tags=["meta"],
     )
     domain_default = SkillMeta(
-        skill_id="agentx-codex-conductor", name="agentx-codex-conductor",
+        skill_id="task-conductor", name="task-conductor",
         description="Create or inspect SKILL.md catalog",
-        body="", path="agentx-codex-conductor/SKILL.md", frontmatter={}, tags=["meta"],
+        body="", path="task-conductor/SKILL.md", frontmatter={}, tags=["meta"],
     )
     assert classify_skill_layer(meta, errors) == "meta"
     assert classify_skill_layer(domain_explicit, errors) == "domain"
@@ -154,24 +154,24 @@ def test_conductor_is_meta_and_covers_orchestration(tmp_path: Path):
     skills = tmp_path / "skills"
     _write_skill(
         skills,
-        "agentx-codex-conductor",
-        "Conduct Codex use of skill-injection-mcp, self-directing-mcp, and AgentX on one delegated production task.",
+        "task-conductor",
+        "Coordinate several skills and tools on one delegated production task.",
         extra="layer: meta\n",
     )
     _write_skill(skills, "package-installer", "Install Python packages and project dependencies with pip.")
     eng = _engine(tmp_path, skills)
     try:
-        scanned = next(s for s in eng.registry.all() if s.skill_id == "agentx-codex-conductor")
+        scanned = next(s for s in eng.registry.all() if s.skill_id == "task-conductor")
         assert scanned.layer == "meta"
         resp = eng.resolve(SkillInjectRequest(requirements=[
             Requirement(
                 id="conduct",
-                description="Conduct Codex use of skill-injection-mcp, self-directing-mcp, and AgentX on one delegated production task.",
+                description="Coordinate several skills and tools on one delegated production task.",
                 required=True,
                 layer="meta",
             ),
         ]))
-        assert resp.checks[0].skill_id == "agentx-codex-conductor"
+        assert resp.checks[0].skill_id == "task-conductor"
         assert resp.checks[0].layer == "meta"
     finally:
         eng.close()

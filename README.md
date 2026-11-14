@@ -1,4 +1,18 @@
+<div align="center">
+
+<img src="assets/logo.svg" width="160">
+
 # Skill Injection MCP
+
+**Hybrid skill retriever for AI agents: BM25, dense vectors and rank fusion over `SKILL.md` files.**
+
+[![CI](https://github.com/fox1245/skill-injection-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/fox1245/skill-injection-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](#requirements)
+
+</div>
+
+---
 
 AI 에이전트가 여러 개의 `SKILL.md` 파일 중 현재 요청에 가장 적합한 스킬을 찾아주는 MCP 서버입니다.
 

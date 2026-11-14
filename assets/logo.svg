@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="t">
+  <title id="t">skill-injection-mcp</title>
+  <rect x="2" y="2" width="252" height="252" rx="54" fill="#0f172a" stroke="#334155" stroke-width="4"/>
+  <g fill="none" stroke="#e2e8f0" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+    <polyline points="88,76 44,128 88,180"/><polyline points="168,76 212,128 168,180"/>
+  </g>
+  <polygon points="128,98 158,128 128,158 98,128" fill="#a78bfa"/>
+</svg>
